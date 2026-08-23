@@ -13,13 +13,13 @@ TAG=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$REPO/releases/latest") || 
 TAG="${TAG##*/}"
 [[ "$TAG" == wall-* ]] || exit 0
 
-# One image slot per connected display: 1 monitor gets middle, 2 get left and
-# right, 3 get all three, more than 3 cycle left/middle/right again.
+# One image slot per connected display: 1 monitor gets middle, 2 get the
+# adjacent left+middle pair, 3 get all three, more than 3 cycle again.
 COUNT=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSScreen.screens.count' 2>/dev/null)
 (( COUNT >= 1 )) || COUNT=1
 case $COUNT in
   1) SLOTS=(middle) ;;
-  2) SLOTS=(left right) ;;
+  2) SLOTS=(left middle) ;;   # adjacent panels, so the pair stays continuous
   *) ROT=(left middle right)
      SLOTS=()
      for ((i = 0; i < COUNT; i++)); do SLOTS+=("${ROT[$((i % 3 + 1))]}"); done ;;

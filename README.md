@@ -35,7 +35,7 @@ left-to-right arrangement in System Settings → Displays:
 | Monitors | You get |
 | --- | --- |
 | 1 | middle |
-| 2 | left + right |
+| 2 | left + middle (adjacent, so the panels flow) |
 | 3 | left + middle + right |
 | 4+ | left/middle/right, repeating |
 
