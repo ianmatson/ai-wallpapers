@@ -1,7 +1,7 @@
 # Daily wallpaper subscriber for Windows. Edit $File, then schedule with install.ps1.
 
 $Repo = "https://github.com/ianmatson/ai-wallpapers"
-$File = "landscape-1.jpg"   # landscape-1.jpg | landscape-2.jpg | portrait-1.jpg
+$File = "landscape-middle.jpg"   # landscape-left.jpg | landscape-middle.jpg | landscape-right.jpg
 $Dir  = "$env:USERPROFILE\DailyWall"   # where images are saved
 
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null

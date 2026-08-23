@@ -1,6 +1,7 @@
 # ai-wallpapers
 
-Every day codex generates a new wallpaper — follow along here.
+Every day codex generates a new wallpaper — a matching set of three: left,
+middle, and right. Follow along here.
 
 A new [release](https://github.com/ianmatson/ai-wallpapers/releases) is published
 daily, tagged `wall-YYYY-MM-DD`. The asset names never change, so these URLs
@@ -8,9 +9,9 @@ always point at today's images:
 
 | Image | URL |
 | --- | --- |
-| Landscape 1 | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-1.jpg` |
-| Landscape 2 | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-2.jpg` |
-| Portrait 1 | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/portrait-1.jpg` |
+| Left | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-left.jpg` |
+| Middle | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-middle.jpg` |
+| Right | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-right.jpg` |
 
 Grab one by hand whenever you like, or subscribe below and your desktop updates
 itself every morning. No GitHub account or token needed.
@@ -24,14 +25,22 @@ curl -fsSL -o ~/DailyWall/wallpaper.sh "$BASE/wallpaper.sh"
 curl -fsSL -o ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist "$BASE/com.ianmatson.wallpaper.plist"
 chmod +x ~/DailyWall/wallpaper.sh
 
-# Edit wallpaper.sh first if you want to change anything (see below).
 sed -i '' "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist
 ```
 
-Runs once a day at 04:00. macOS will ask once for permission to control System
-Events — approve it, then run this to set the wallpaper immediately rather than
-waiting for tomorrow:
+Runs once a day at 04:00 and puts one image on each monitor, matching your
+left-to-right arrangement in System Settings → Displays:
+
+| Monitors | You get |
+| --- | --- |
+| 1 | middle |
+| 2 | left + right |
+| 3 | left + middle + right |
+| 4+ | left/middle/right, repeating |
+
+No permission prompts. To set today's wallpaper immediately instead of waiting
+for 04:00:
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
@@ -50,25 +59,20 @@ New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 iwr "$Base/wallpaper.ps1" -OutFile "$Dir\wallpaper.ps1"
 iwr "$Base/install.ps1"   -OutFile "$Dir\install.ps1"
 
-# Edit wallpaper.ps1 first if you want to change anything (see below).
+# Optional: edit the $File line in wallpaper.ps1 to pick left/middle/right.
 powershell -ExecutionPolicy Bypass -File "$Dir\install.ps1"
 ```
 
 Creates a `DailyWallpaper` scheduled task that runs at 04:00 and sets the
-wallpaper once straight away.
+wallpaper once straight away. Windows gets a single image on all monitors
+(`landscape-middle.jpg` by default).
 
 Uninstall: `Unregister-ScheduledTask -TaskName DailyWallpaper -Confirm:$false`
 
 ## Customising
 
-Both settings live at the top of the script you downloaded —
-`wallpaper.sh` on macOS, `wallpaper.ps1` on Windows.
-
-**Which image.** Pick the one that suits your display:
-
-```sh
-FILE="landscape-1.jpg"   # or landscape-2.jpg, or portrait-1.jpg
-```
+Settings live at the top of the script you downloaded — `wallpaper.sh` on
+macOS, `wallpaper.ps1` on Windows.
 
 **Where images are saved.** Default is `~/DailyWall`:
 
@@ -84,17 +88,21 @@ On macOS the script itself and the images live in the same folder, so if you mov
 `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist`. On Windows the script
 path is set separately in `install.ps1`, so `$Dir` only affects the images.
 
+**Which image (Windows only).** Edit `$File` in `wallpaper.ps1`. macOS picks
+images automatically from your monitor layout.
+
 ## Notes
 
+- Portrait monitors get a centre-cropped version of their slot's image
+  automatically (macOS "Fill Screen" scaling).
 - macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
 - Both scripts no-op when there's no new release, so a re-run won't flash your
   desktop.
-- macOS only repaints reliably when the file path changes, so each day's image
-  gets a date-stamped name.
+- On macOS, monitors plugged in *after* the 04:00 run keep their old wallpaper
+  until the next run. Run the `kickstart` command above to fix it on the spot.
+- New macOS Spaces created after the wallpaper is set may not inherit it —
+  known macOS quirk; it corrects itself at the next daily run.
 - If the machine is asleep at 04:00, macOS runs the job at the next wake and
   Windows waits until tomorrow. Either way you just miss a day, which is fine.
-- Spaces created after the wallpaper is set may not inherit it. If that bugs you,
-  `brew install wallpaper` and swap the `osascript` line for
-  `wallpaper set "$OUT"`.
 - Release asset downloads don't count against GitHub API rate limits.
 - Only the newest 30 releases are kept; older days are deleted.
