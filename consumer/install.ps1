@@ -1,6 +1,6 @@
 # Registers wallpaper.ps1 to run daily at 4am. Run once, no admin rights needed.
 
-$Script = Join-Path "$env:USERPROFILE\Documents\DailyWall" "wallpaper.ps1"
+$Script = Join-Path "$env:USERPROFILE\DailyWall" "wallpaper.ps1"
 if (-not (Test-Path $Script)) { throw "Put wallpaper.ps1 at $Script first." }
 
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" `

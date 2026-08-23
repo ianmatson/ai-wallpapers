@@ -2,7 +2,7 @@
 
 $Repo = "https://github.com/ianmatson/ai-wallpapers"
 $File = "landscape-1.jpg"   # landscape-1.jpg | landscape-2.jpg | portrait-1.jpg
-$Dir  = "$env:USERPROFILE\Documents\DailyWall"   # where images are saved
+$Dir  = "$env:USERPROFILE\DailyWall"   # where images are saved
 
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 $Out = Join-Path $Dir "current.jpg"
