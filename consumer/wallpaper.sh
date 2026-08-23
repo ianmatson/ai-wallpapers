@@ -3,7 +3,7 @@
 
 REPO="https://github.com/ianmatson/ai-wallpapers"
 FILE="landscape-1.jpg"   # landscape-1.jpg | landscape-2.jpg | portrait-1.jpg
-DIR="$HOME/Pictures/DailyWall"
+DIR="$HOME/Documents/DailyWall"   # where images are saved — change this and the plist path together
 KEEP=7                   # days of wallpapers to retain
 
 mkdir -p "$DIR"

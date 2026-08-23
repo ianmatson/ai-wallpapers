@@ -7,21 +7,13 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>__HOME__/Pictures/DailyWall/wallpaper.sh</string>
+    <string>__HOME__/Documents/DailyWall/wallpaper.sh</string>
   </array>
-  <key>RunAtLoad</key>
-  <true/>
   <key>StartCalendarInterval</key>
-  <array>
-    <dict>
-      <key>Hour</key><integer>9</integer>
-      <key>Minute</key><integer>0</integer>
-    </dict>
-    <dict>
-      <key>Hour</key><integer>12</integer>
-      <key>Minute</key><integer>0</integer>
-    </dict>
-  </array>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
   <key>StandardOutPath</key>
   <string>/tmp/wallpaper.log</string>
   <key>StandardErrorPath</key>
