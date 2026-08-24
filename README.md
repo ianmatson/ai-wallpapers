@@ -19,6 +19,17 @@ itself every morning. No GitHub account or token needed.
 ## Subscribe — macOS
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer/install-macos.sh | zsh
+```
+
+That installs or updates DailyWall without admin rights, downloads today's
+triptych, and watches for monitor changes. If you prefer to inspect each step,
+the equivalent manual installation is:
+
+<details>
+<summary>Manual installation</summary>
+
+```sh
 BASE=https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer
 mkdir -p ~/DailyWall
 curl -fsSL -o ~/DailyWall/wallpaper.sh "$BASE/wallpaper.sh"
@@ -33,6 +44,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ianmatson.wallpaper.
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ianmatson.wallpaper-watcher.plist
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 ```
+
+</details>
 
 Downloads all three images once a day at 04:00 and puts one image on each
 monitor, matching your left-to-right arrangement in System Settings → Displays:
