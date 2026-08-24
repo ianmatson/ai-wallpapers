@@ -76,12 +76,20 @@ today's wallpaper immediately instead of waiting for 04:00:
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 ```
 
-Uninstall:
+### Uninstall — macOS
+
+You usually never need to: **just set your own wallpaper** in System Settings.
+DailyWall notices within a few seconds, uninstalls itself completely (launch
+agents, scripts, cached images, and logs), and posts a notification saying so.
+
+To uninstall by hand instead:
 
 ```sh
-launchctl bootout gui/$(id -u)/com.ianmatson.wallpaper
-launchctl bootout gui/$(id -u)/com.ianmatson.wallpaper-watcher
+zsh ~/DailyWall/wallpaper.sh --uninstall
 ```
+
+Both paths remove everything the installer created: the two launch agents and
+their plists, `~/DailyWall`, and the logs in `/tmp`.
 
 ## Subscribe — iPhone and iPad
 
@@ -146,6 +154,12 @@ images automatically from your monitor layout.
 - macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
 - The macOS display watcher only reads cached files; monitor changes never make
   network requests.
+- Setting your own wallpaper on **any** screen counts as opting out on macOS —
+  DailyWall uninstalls itself entirely rather than fight you for the other
+  screens at the next daily run.
+- The opt-out detection compares each screen's current wallpaper path against
+  `~/DailyWall`. If you keep old macOS Spaces that still show a pre-DailyWall
+  wallpaper, visiting one can read as opting out.
 - New macOS Spaces created after the wallpaper is set may not inherit it —
   known macOS quirk; it corrects itself at the next daily run.
 - If the machine is asleep at 04:00, macOS runs the job at the next wake and

@@ -1,7 +1,8 @@
 #!/bin/zsh
 # Daily wallpaper subscriber for macOS. The default action downloads the latest
 # triptych and applies it. --apply only reapplies the newest cached triptych, so
-# the display watcher never needs network access.
+# the display watcher never needs network access. --check uninstalls everything
+# if the user has set their own wallpaper, and --uninstall does so on demand.
 
 set -u
 
@@ -9,6 +10,10 @@ REPO="https://github.com/ianmatson/wallpaper-journey"
 DIR="$HOME/DailyWall"   # where images are saved — change this and both plist paths together
 KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"
+APPLIED_MARKER="$DIR/.applied"
+LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+DAILY_JOB="com.ianmatson.wallpaper"
+WATCHER_JOB="com.ianmatson.wallpaper-watcher"
 
 mkdir -p "$DIR"
 
@@ -86,6 +91,69 @@ function run(argv) {
   });
 }
 EOF
+  # The marker records that this machine has shown a DailyWall wallpaper, so
+  # a pre-install desktop never reads as the user opting back out.
+  [[ $? -eq 0 ]] && : > "$APPLIED_MARKER"
+}
+
+# Prints "ours" when every screen's wallpaper lives in $DIR, "theirs" when any
+# screen shows something else, nothing when the answer is unknowable.
+wallpaper_state() {
+  osascript -l JavaScript - "$DIR" 2>/dev/null <<'EOF'
+function run(argv) {
+  ObjC.import("AppKit");
+  const dir = argv[0].replace(/\/*$/, "/");
+  const ws = $.NSWorkspace.sharedWorkspace;
+  const screens = $.NSScreen.screens.js;
+  if (screens.length === 0) return "";
+  for (const screen of screens) {
+    const url = ws.desktopImageURLForScreen(screen);
+    if (url.isNil()) return "theirs";
+    const path = ObjC.unwrap(url.path);
+    if (!path || !path.startsWith(dir)) return "theirs";
+  }
+  return "ours";
+}
+EOF
+}
+
+manual_change() {
+  [[ -e "$APPLIED_MARKER" ]] || return 1
+  [[ "$(wallpaper_state)" == theirs ]] || return 1
+  # Confirm after a pause so our own apply, caught mid-flight with only some
+  # screens set, never reads as a manual change.
+  sleep 3
+  [[ "$(wallpaper_state)" == theirs ]]
+}
+
+# Removes everything the installer created. $1 is the launchd job the caller
+# runs under; it is booted out last because bootout kills the job's processes,
+# which would end this script before the cleanup finished.
+uninstall() {
+  local last="$1"
+  local domain="gui/$(id -u)"
+  local job
+
+  for job in "$DAILY_JOB" "$WATCHER_JOB"; do
+    [[ "$job" == "$last" ]] && continue
+    launchctl bootout "$domain/$job" 2>/dev/null || true
+  done
+
+  # Delete only files DailyWall created, in case DIR points at a shared folder.
+  rm -f -- \
+    "$LAUNCH_AGENTS/$DAILY_JOB.plist" \
+    "$LAUNCH_AGENTS/$WATCHER_JOB.plist" \
+    /tmp/wallpaper.log /tmp/wallpaper-watcher.log \
+    "$DIR"/wall-*(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
+    "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
+  rmdir -- "$DIR" 2>/dev/null || true
+
+  launchctl bootout "$domain/$last" 2>/dev/null || true
+}
+
+self_destruct() {
+  osascript -e 'display notification "You set your own wallpaper, so DailyWall uninstalled itself and removed its files." with title "DailyWall"' 2>/dev/null || true
+  uninstall "$1"
 }
 
 prune_cache() {
@@ -131,14 +199,27 @@ refresh() {
 
 case "${1:-refresh}" in
   refresh|--refresh)
-    refresh
+    if manual_change; then
+      self_destruct "$DAILY_JOB"
+    else
+      refresh
+    fi
     ;;
   apply|--apply)
     tag=$(cached_tag) || exit 0
     apply_tag "$tag"
     ;;
+  check|--check)
+    if manual_change; then
+      self_destruct "$WATCHER_JOB"
+    fi
+    ;;
+  uninstall|--uninstall)
+    print -r -- "Removing DailyWall's launch agents, scripts, images, and logs."
+    uninstall "$WATCHER_JOB"
+    ;;
   *)
-    print -u2 -- "usage: $0 [--refresh|--apply]"
+    print -u2 -- "usage: $0 [--refresh|--apply|--check|--uninstall]"
     exit 2
     ;;
 esac
