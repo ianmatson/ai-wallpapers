@@ -20,9 +20,9 @@ readonly TAG="wall-$RUN_DATE"
 readonly NATIVE_DIR="$NATIVE_ROOT/$TAG"
 readonly UPSCALED_DIR="$UPSCALED_ROOT/$TAG"
 readonly STAGING_DIR="$STAGING_ROOT/$TAG"
-readonly SPOTIFY_ACCEPTED="$STAGING_DIR/spotify-playlist.json"
+readonly SPOTIFY_BASE="$STAGING_DIR/spotify-playlist.json"
 readonly STORY_FILE="$STAGING_DIR/story.txt"
-readonly NOTES_FILE="$STAGING_DIR/release-notes.txt"
+readonly NOTES_BASE="$STAGING_DIR/release-notes.txt"
 readonly SLOTS=(left middle right)
 
 die() {
@@ -32,6 +32,49 @@ die() {
 
 info() {
   print -u2 -r -- "[$(TZ="$TIME_ZONE" date '+%F %T %Z')] $*"
+}
+
+active_revision() {
+  local latest=0 file name revision
+  [[ -f "$SPOTIFY_BASE" ]] && latest=1
+  for file in "$STAGING_DIR"/spotify-playlist-r*.json(N); do
+    name="${file:t}"
+    revision="${name#spotify-playlist-r}"
+    revision="${revision%.json}"
+    [[ "$revision" == <-> ]] || continue
+    (( revision > latest )) && latest="$revision"
+  done
+  print -r -- "$latest"
+}
+
+spotify_file_for_revision() {
+  local revision="$1"
+  if (( revision <= 1 )); then
+    print -r -- "$SPOTIFY_BASE"
+  else
+    print -r -- "$STAGING_DIR/spotify-playlist-r$revision.json"
+  fi
+}
+
+notes_file_for_revision() {
+  local revision="$1"
+  if (( revision <= 1 )); then
+    print -r -- "$NOTES_BASE"
+  else
+    print -r -- "$STAGING_DIR/release-notes-r$revision.txt"
+  fi
+}
+
+active_spotify_file() {
+  local revision="$(active_revision)"
+  (( revision == 0 )) && revision=1
+  spotify_file_for_revision "$revision"
+}
+
+active_notes_file() {
+  local revision="$(active_revision)"
+  (( revision == 0 )) && revision=1
+  notes_file_for_revision "$revision"
 }
 
 require_command() {
@@ -75,15 +118,17 @@ require_jpeg() {
 }
 
 context() {
+  local spotify_accepted="$(active_spotify_file)"
+  local notes_file="$(active_notes_file)"
   jq -n \
     --arg run_date "$RUN_DATE" \
     --arg tag "$TAG" \
     --arg native_dir "$NATIVE_DIR" \
     --arg upscaled_dir "$UPSCALED_DIR" \
     --arg staging_dir "$STAGING_DIR" \
-    --arg spotify_accepted "$SPOTIFY_ACCEPTED" \
+    --arg spotify_accepted "$spotify_accepted" \
     --arg story_file "$STORY_FILE" \
-    --arg notes_file "$NOTES_FILE" \
+    --arg notes_file "$notes_file" \
     '{run_date:$run_date,tag:$tag,native_dir:$native_dir,upscaled_dir:$upscaled_dir,staging_dir:$staging_dir,spotify_accepted:$spotify_accepted,story_file:$story_file,notes_file:$notes_file}'
 }
 
@@ -274,8 +319,8 @@ upscale() {
 
 public_validate_spotify() {
   local json_file="$1"
-  local title creator type uri url playable gs_hint subtitle_type
-  local page_status oembed_status oembed_tmp oembed_title oembed_provider
+  local title creator type uri url playable
+  local page_status page_tmp public_description oembed_status oembed_tmp oembed_title oembed_provider
 
   require_file "$json_file"
   jq -e 'type == "object"' "$json_file" >/dev/null || die "Spotify candidate is not a JSON object: $json_file"
@@ -285,18 +330,22 @@ public_validate_spotify() {
   uri="$(jq -er '.uri' "$json_file")" || die "Spotify candidate lacks URI"
   url="$(jq -er '.url' "$json_file")" || die "Spotify candidate lacks URL"
   playable="$(jq -er '.playable_status' "$json_file")" || die "Spotify candidate lacks playback status"
-  gs_hint="$(jq -r '.gs_hint // false' "$json_file")"
-  subtitle_type="$(jq -r '.subtitle_type // .playlist_subtitle_metadata.type // ""' "$json_file")"
-
   [[ "$type" == "playlist" ]] || die "Spotify result type is not playlist: $type"
   [[ "$playable" == "PLAYABLE" ]] || die "Spotify result is not PLAYABLE: $playable"
   [[ "$uri" == spotify:playlist:* ]] || die "invalid Spotify playlist URI: $uri"
   [[ "$url" == https://open.spotify.com/playlist/* ]] || die "invalid Spotify playlist URL: $url"
-  [[ "$gs_hint" != "true" ]] || die "generative Spotify result rejected: $title"
-  [[ "$subtitle_type" != "GENERATIVE" && "$subtitle_type" != "MADE_FOR_YOU" ]] || die "non-public Spotify result rejected: $subtitle_type"
-
-  page_status="$(curl -L -sS -o /dev/null -w '%{http_code}' "$url")" || die "Spotify playlist page request failed: $url"
-  [[ "$page_status" == "200" ]] || die "Spotify playlist page returned HTTP $page_status: $url"
+  page_tmp="$(mktemp -t ai-wallpapers-spotify-page.XXXXXX)"
+  page_status="$(curl -L -sS -o "$page_tmp" -w '%{http_code}' "$url")" || {
+    rm -f "$page_tmp"
+    die "Spotify playlist page request failed: $url"
+  }
+  [[ "$page_status" == "200" ]] || {
+    rm -f "$page_tmp"
+    die "Spotify playlist page returned HTTP $page_status: $url"
+  }
+  public_description="$(grep -o '<meta property="og:description" content="[^"]*"' "$page_tmp" | head -1 | sed 's/^.*content="//' || true)"
+  public_description="${public_description%\"}"
+  rm -f "$page_tmp"
 
   oembed_tmp="$(mktemp -t ai-wallpapers-spotify-oembed.XXXXXX)"
   oembed_status="$(curl -G -sS -o "$oembed_tmp" -w '%{http_code}' --data-urlencode "url=$url" https://open.spotify.com/oembed)" || {
@@ -324,27 +373,35 @@ public_validate_spotify() {
   SPOTIFY_OEMBED_STATUS="$oembed_status"
   SPOTIFY_OEMBED_TITLE="$oembed_title"
   SPOTIFY_OEMBED_PROVIDER="$oembed_provider"
+  SPOTIFY_PUBLIC_DESCRIPTION="$public_description"
 }
 
-validate_playlist() {
+inspect_playlist() {
   local candidate="${1:-}"
+  [[ -n "$candidate" ]] || die "usage: pipeline.zsh inspect-playlist CANDIDATE_JSON"
+  public_validate_spotify "$candidate"
+  jq -n \
+    --arg title "$(jq -r .title "$candidate")" \
+    --arg creator "$(jq -r .creator "$candidate")" \
+    --arg uri "$(jq -r .uri "$candidate")" \
+    --arg url "$(jq -r .url "$candidate")" \
+    --arg description "$SPOTIFY_PUBLIC_DESCRIPTION" \
+    --argjson page "$SPOTIFY_PAGE_STATUS" \
+    --argjson oembed "$SPOTIFY_OEMBED_STATUS" \
+    '{title:$title,creator:$creator,uri:$uri,url:$url,public_description:$description,page_http_status:$page,oembed_http_status:$oembed,publicly_resolvable:true}'
+}
+
+accept_playlist_candidate() {
+  local candidate="$1" target="$2"
   local uri url existing releases_tmp enhanced_tmp
 
-  if [[ -f "$SPOTIFY_ACCEPTED" ]]; then
-    public_validate_spotify "$SPOTIFY_ACCEPTED"
-    info "reusing validated Spotify playlist: $(jq -r .title "$SPOTIFY_ACCEPTED")"
-    print -r -- "$SPOTIFY_ACCEPTED"
-    return
-  fi
-
-  [[ -n "$candidate" ]] || die "usage: pipeline.zsh validate-playlist CANDIDATE_JSON"
   require_file "$candidate"
+  [[ ! -e "$target" ]] || die "refusing to overwrite soundtrack revision: $target"
   public_validate_spotify "$candidate"
   uri="$(jq -r .uri "$candidate")"
   url="$(jq -r .url "$candidate")"
 
   while IFS= read -r existing; do
-    [[ "$existing" == "$SPOTIFY_ACCEPTED" ]] && continue
     if [[ "$(jq -r '.uri // ""' "$existing" 2>/dev/null)" == "$uri" ]]; then
       die "Spotify playlist URI already exists in local staging archive: $uri"
     fi
@@ -365,17 +422,49 @@ validate_playlist() {
     --argjson oembed "$SPOTIFY_OEMBED_STATUS" \
     --arg oembed_title "$SPOTIFY_OEMBED_TITLE" \
     --arg oembed_provider "$SPOTIFY_OEMBED_PROVIDER" \
-    '. + {page_http_status:$page,oembed_http_status:$oembed,oembed_title:$oembed_title,oembed_provider:$oembed_provider}' \
+    --arg public_description "$SPOTIFY_PUBLIC_DESCRIPTION" \
+    '. + {page_http_status:$page,oembed_http_status:$oembed,oembed_title:$oembed_title,oembed_provider:$oembed_provider,public_description:$public_description}' \
     "$candidate" >"$enhanced_tmp"
-  mv "$enhanced_tmp" "$SPOTIFY_ACCEPTED"
-  info "accepted Spotify playlist: $(jq -r .title "$SPOTIFY_ACCEPTED")"
-  print -r -- "$SPOTIFY_ACCEPTED"
+  mv "$enhanced_tmp" "$target"
+  info "accepted Spotify playlist: $(jq -r .title "$target")"
+  print -r -- "$target"
+}
+
+validate_playlist() {
+  local candidate="${1:-}" accepted="$(active_spotify_file)"
+
+  if [[ -f "$accepted" ]]; then
+    public_validate_spotify "$accepted"
+    info "reusing validated Spotify playlist: $(jq -r .title "$accepted")"
+    print -r -- "$accepted"
+    return
+  fi
+
+  [[ -n "$candidate" ]] || die "usage: pipeline.zsh validate-playlist CANDIDATE_JSON"
+  accept_playlist_candidate "$candidate" "$SPOTIFY_BASE"
+}
+
+replace_playlist() {
+  local candidate="${1:-}" current_revision next_revision target
+  [[ -n "$candidate" ]] || die "usage: pipeline.zsh replace-playlist CANDIDATE_JSON"
+  current_revision="$(active_revision)"
+  if (( current_revision == 0 )); then
+    accept_playlist_candidate "$candidate" "$SPOTIFY_BASE"
+    return
+  fi
+  next_revision=$(( current_revision + 1 ))
+  target="$(spotify_file_for_revision "$next_revision")"
+  accept_playlist_candidate "$candidate" "$target"
 }
 
 stage() {
   validate_native >/dev/null
-  require_file "$SPOTIFY_ACCEPTED"
-  public_validate_spotify "$SPOTIFY_ACCEPTED"
+  local revision="$(active_revision)" spotify_accepted notes_file
+  (( revision > 0 )) || die "no accepted Spotify playlist exists"
+  spotify_accepted="$(spotify_file_for_revision "$revision")"
+  notes_file="$(notes_file_for_revision "$revision")"
+  require_file "$spotify_accepted"
+  public_validate_spotify "$spotify_accepted"
   require_file "$STORY_FILE"
 
   local story line_count slot png jpg width height expected_tmp
@@ -404,26 +493,30 @@ stage() {
     print -r -- "|:---:|:---:|:---:|"
     print -r -- "| ![Left panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-left.jpg) | ![Middle panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-middle.jpg) | ![Right panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-right.jpg) |"
     print
-    print -r -- "🎧 **Soundtrack:** [$(jq -r .title "$SPOTIFY_ACCEPTED")]($(jq -r .url "$SPOTIFY_ACCEPTED")) — $(jq -r .creator "$SPOTIFY_ACCEPTED")"
+    print -r -- "🎧 **Soundtrack:** [$(jq -r .title "$spotify_accepted")]($(jq -r .url "$spotify_accepted")) — $(jq -r .creator "$spotify_accepted")"
   } >"$expected_tmp"
 
-  if [[ -e "$NOTES_FILE" ]]; then
-    cmp -s "$expected_tmp" "$NOTES_FILE" || {
+  if [[ -e "$notes_file" ]]; then
+    cmp -s "$expected_tmp" "$notes_file" || {
       rm -f "$expected_tmp"
-      die "existing release notes differ from deterministic output: $NOTES_FILE"
+      die "existing release notes differ from deterministic output: $notes_file"
     }
     rm -f "$expected_tmp"
   else
-    mv "$expected_tmp" "$NOTES_FILE"
+    mv "$expected_tmp" "$notes_file"
   fi
 
-  jq -n --arg directory "$STAGING_DIR" --arg notes "$NOTES_FILE" \
-    '{directory:$directory,notes:$notes,assets:["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]}'
+  jq -n --arg directory "$STAGING_DIR" --arg notes "$notes_file" --argjson soundtrack_revision "$revision" \
+    '{directory:$directory,notes:$notes,soundtrack_revision:$soundtrack_revision,assets:["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]}'
 }
 
 validate_release() {
-  require_file "$NOTES_FILE"
-  require_file "$SPOTIFY_ACCEPTED"
+  local revision="$(active_revision)" spotify_accepted notes_file
+  (( revision > 0 )) || die "no accepted Spotify playlist exists"
+  spotify_accepted="$(spotify_file_for_revision "$revision")"
+  notes_file="$(notes_file_for_revision "$revision")"
+  require_file "$notes_file"
+  require_file "$spotify_accepted"
   local release_json body latest slot asset_url spotify_url
   release_json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,assets,body)" || die "GitHub Release does not exist: $TAG"
   [[ "$(jq -r .tagName <<<"$release_json")" == "$TAG" ]] || die "release tag mismatch"
@@ -433,7 +526,7 @@ validate_release() {
   latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
   [[ "$latest" == "$TAG" ]] || die "latest release is $latest, expected $TAG"
   body="$(jq -r .body <<<"$release_json")"
-  spotify_url="$(jq -r .url "$SPOTIFY_ACCEPTED")"
+  spotify_url="$(jq -r .url "$spotify_accepted")"
   [[ "$body" == *"$spotify_url"* ]] || die "release body lacks exact Spotify URL"
 
   for slot in "${SLOTS[@]}"; do
@@ -441,12 +534,12 @@ validate_release() {
     [[ "$body" == *"$asset_url"* ]] || die "release body lacks embedded asset URL: $asset_url"
     [[ "$(curl -L -sS -o /dev/null -w '%{http_code}' "$asset_url")" == "200" ]] || die "embedded asset URL does not resolve: $asset_url"
   done
-  public_validate_spotify "$SPOTIFY_ACCEPTED"
+  public_validate_spotify "$spotify_accepted"
 
   jq -n \
     --arg url "$(jq -r .url <<<"$release_json")" \
     --arg tag "$TAG" \
-    --arg spotify_title "$(jq -r .title "$SPOTIFY_ACCEPTED")" \
+    --arg spotify_title "$(jq -r .title "$spotify_accepted")" \
     --arg spotify_url "$spotify_url" \
     '{url:$url,tag:$tag,assets:["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"],embedded_previews:true,spotify:{title:$spotify_title,url:$spotify_url,publicly_validated:true}}'
 }
@@ -466,12 +559,13 @@ retention() {
 
 publish() {
   stage >/dev/null
+  local notes_file="$(active_notes_file)"
   if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
     local release_json
     release_json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets)"
     jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
       die "existing release assets are invalid; refusing to replace them"
-    gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES_FILE" >/dev/null
+    gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file" >/dev/null
   else
     gh release create "$TAG" \
       "$STAGING_DIR/landscape-left.jpg" \
@@ -479,7 +573,7 @@ publish() {
       "$STAGING_DIR/landscape-right.jpg" \
       --repo "$GITHUB_REPOSITORY" \
       --title "Wallpaper $RUN_DATE" \
-      --notes-file "$NOTES_FILE" \
+      --notes-file "$notes_file" \
       --latest >/dev/null
   fi
   validate_release
@@ -496,7 +590,9 @@ Commands:
   references                      Print the local reference-image manifest as JSON.
   validate-native                 Validate today's three native PNGs.
   upscale                         Queue, wait for, validate, and archive 4x PNGs.
+  inspect-playlist CANDIDATE      Show public metadata for judging a Spotify candidate.
   validate-playlist CANDIDATE     Publicly validate and accept a Spotify candidate JSON.
+  replace-playlist CANDIDATE      Append a validated soundtrack revision without deleting the old one.
   stage                           Convert JPEGs and deterministically build release notes.
   publish                         Create/edit, validate, and apply 30-release retention.
   validate-release                Validate an already-published release without changing it.
@@ -515,7 +611,9 @@ main() {
     references) references "$@" ;;
     validate-native) validate_native "$@" ;;
     upscale) upscale "$@" ;;
+    inspect-playlist) inspect_playlist "$@" ;;
     validate-playlist) validate_playlist "$@" ;;
+    replace-playlist) replace_playlist "$@" ;;
     stage) stage "$@" ;;
     publish) publish "$@" ;;
     validate-release) validate_release "$@" ;;

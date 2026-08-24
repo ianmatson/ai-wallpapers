@@ -15,6 +15,7 @@ producer/pipeline.zsh preflight
 producer/pipeline.zsh references
 producer/pipeline.zsh validate-native
 producer/pipeline.zsh upscale
+producer/pipeline.zsh inspect-playlist /path/to/spotify-candidate.json
 producer/pipeline.zsh validate-playlist /path/to/spotify-candidate.json
 producer/pipeline.zsh stage
 producer/pipeline.zsh publish
@@ -23,8 +24,23 @@ producer/pipeline.zsh publish
 Run `producer/pipeline.zsh context` for the current tag and exact archive paths.
 The automation writes its selected playlist candidate to a new temporary JSON
 file and its story sentence to the returned `story_file` path. The playlist
-validator rejects private, generated, personalized, duplicate, or publicly
-unresolvable playlists before it creates the accepted `spotify-playlist.json`.
+validator rejects duplicate or publicly unresolvable playlists before it
+creates the accepted `spotify-playlist.json`. Generative-search results are
+allowed when their exact public page and Spotify oEmbed metadata both validate.
+`inspect-playlist` also returns Spotify's public playlist description so Codex
+can judge specificity and ambiance rather than relying on a generic title.
+
+An explicit soundtrack reroll is append-only:
+
+```sh
+producer/pipeline.zsh replace-playlist /path/to/better-candidate.json
+producer/pipeline.zsh stage
+producer/pipeline.zsh publish
+```
+
+That creates numbered `spotify-playlist-rN.json` and `release-notes-rN.txt`
+revisions. Prior choices and notes remain untouched while the release body is
+updated to the newest validated revision.
 
 The script never overwrites an existing native, upscaled, or staged artifact.
 On a rerun it validates and reuses good artifacts, and stops on a conflict.
