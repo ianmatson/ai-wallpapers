@@ -13,7 +13,7 @@ always point at today's images:
 | Middle | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-middle.jpg` |
 | Right | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-right.jpg` |
 
-Grab one by hand whenever you like, or subscribe below and your desktop updates
+Grab one by hand whenever you like, or subscribe below and your device updates
 itself every morning. No GitHub account or token needed.
 
 ## Subscribe — macOS
@@ -47,6 +47,21 @@ launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 ```
 
 Uninstall: `launchctl bootout gui/$(id -u)/com.ianmatson.wallpaper`
+
+## Subscribe — iPhone and iPad
+
+Install the [Daily Background shortcut](https://www.icloud.com/shortcuts/7e6407d39a0f42bf8187600761266203),
+then run it once and approve the requested permissions. The shortcut downloads
+the latest `landscape-middle.jpg` and applies it to your selected wallpaper.
+
+After installing, you may need to edit the shortcut's **Set Wallpaper Photo**
+action and select the wallpaper you want it to change each day.
+
+To run it automatically:
+
+1. Open Shortcuts and tap **Automation** → **+** → **Time of Day**.
+2. Choose a time, set **Repeat** to **Daily**, and select **Run Immediately**.
+3. Tap **Next**, select **Daily Background**, and tap **Done**.
 
 ## Subscribe — Windows
 
@@ -95,6 +110,9 @@ images automatically from your monitor layout.
 
 - Portrait monitors get a centre-cropped version of their slot's image
   automatically (macOS "Fill Screen" scaling).
+- The iPhone and iPad shortcut updates the wallpaper selected in its **Set
+  Wallpaper Photo** action. Select it again if importing the shortcut does not
+  preserve that choice.
 - macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
 - Both scripts no-op when there's no new release, so a re-run won't flash your
   desktop.
