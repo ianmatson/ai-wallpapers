@@ -16,6 +16,15 @@ always point at today's images:
 Grab one by hand whenever you like, or subscribe below and your device updates
 itself every morning. No GitHub account or token needed.
 
+## Production
+
+The deterministic release work is handled by the versioned
+[`producer/pipeline.zsh`](producer/pipeline.zsh) CLI. Codex supplies the visual
+direction, image generation and review, story sentence, and playlist judgment;
+the script handles validation, upscaling coordination, staging, publishing,
+embedded previews, and retention. See [`producer/README.md`](producer/README.md)
+for the command contract.
+
 ## Subscribe — macOS
 
 ```sh
