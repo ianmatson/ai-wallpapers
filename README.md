@@ -3,6 +3,8 @@
 Every day codex generates a new wallpaper — a matching set of three: left,
 middle, and right. Follow along here.
 
+In theory these backgrounds should play out as a story evolving over time, but we'll see about that, won't we?
+
 A new [release](https://github.com/ianmatson/wallpaper-journey/releases) is published
 daily at ***roughly*** 3am, tagged `wall-YYYY-MM-DD`. The asset names never change, so these URLs
 always point at today's images:
