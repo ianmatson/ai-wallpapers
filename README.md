@@ -4,7 +4,7 @@ Every day codex generates a new wallpaper — a matching set of three: left,
 middle, and right. Follow along here.
 
 A new [release](https://github.com/ianmatson/ai-wallpapers/releases) is published
-daily, tagged `wall-YYYY-MM-DD`. The asset names never change, so these URLs
+daily at ***roughly*** 3am, tagged `wall-YYYY-MM-DD`. The asset names never change, so these URLs
 always point at today's images:
 
 | Image | URL |
