@@ -57,12 +57,6 @@ the latest `landscape-middle.jpg` and applies it to your selected wallpaper.
 After installing, you may need to edit the shortcut's **Set Wallpaper Photo**
 action and select the wallpaper you want it to change each day.
 
-To run it automatically:
-
-1. Open Shortcuts and tap **Automation** → **+** → **Time of Day**.
-2. Choose a time, set **Repeat** to **Daily**, and select **Run Immediately**.
-3. Tap **Next**, select **Daily Background**, and tap **Done**.
-
 ## Subscribe — Windows
 
 In PowerShell (no admin needed):
