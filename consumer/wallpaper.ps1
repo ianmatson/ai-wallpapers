@@ -1,6 +1,6 @@
 # Daily wallpaper subscriber for Windows. Edit $File, then schedule with install.ps1.
 
-$Repo = "https://github.com/ianmatson/ai-wallpapers"
+$Repo = "https://github.com/ianmatson/wallpaper-journey"
 $File = "landscape-middle.jpg"   # landscape-left.jpg | landscape-middle.jpg | landscape-right.jpg
 $Dir  = "$env:USERPROFILE\DailyWall"   # where images are saved
 

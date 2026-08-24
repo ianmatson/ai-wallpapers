@@ -5,7 +5,7 @@
 
 set -u
 
-REPO="https://github.com/ianmatson/ai-wallpapers"
+REPO="https://github.com/ianmatson/wallpaper-journey"
 DIR="$HOME/DailyWall"   # where images are saved — change this and both plist paths together
 KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"

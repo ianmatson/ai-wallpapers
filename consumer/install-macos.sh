@@ -3,7 +3,7 @@
 
 set -eu
 
-readonly BASE="https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer"
+readonly BASE="https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer"
 readonly DAILY_WALL="$HOME/DailyWall"
 readonly LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 readonly DAILY_JOB="com.ianmatson.wallpaper"

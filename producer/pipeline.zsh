@@ -5,8 +5,8 @@ umask 022
 
 readonly TIME_ZONE="${AI_WALLPAPERS_TIME_ZONE:-America/Chicago}"
 readonly REPOSITORY="${AI_WALLPAPERS_REPOSITORY:-/Users/ianmatson/Repositories/ai-wallpapers}"
-readonly REQUIRED_ORIGIN="${AI_WALLPAPERS_REQUIRED_ORIGIN:-git@github.com:ianmatson/ai-wallpapers.git}"
-readonly GITHUB_REPOSITORY="${AI_WALLPAPERS_GITHUB_REPOSITORY:-ianmatson/ai-wallpapers}"
+readonly REQUIRED_ORIGIN="${AI_WALLPAPERS_REQUIRED_ORIGIN:-git@github.com:ianmatson/wallpaper-journey.git}"
+readonly GITHUB_REPOSITORY="${AI_WALLPAPERS_GITHUB_REPOSITORY:-ianmatson/wallpaper-journey}"
 readonly NATIVE_ROOT="${AI_WALLPAPERS_NATIVE_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/native}"
 readonly UPSCALED_ROOT="${AI_WALLPAPERS_UPSCALED_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/upscaled}"
 readonly STAGING_ROOT="${AI_WALLPAPERS_STAGING_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/staging}"

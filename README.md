@@ -1,17 +1,17 @@
-# ai-wallpapers
+# wallpaper-journey
 
 Every day codex generates a new wallpaper — a matching set of three: left,
 middle, and right. Follow along here.
 
-A new [release](https://github.com/ianmatson/ai-wallpapers/releases) is published
+A new [release](https://github.com/ianmatson/wallpaper-journey/releases) is published
 daily at ***roughly*** 3am, tagged `wall-YYYY-MM-DD`. The asset names never change, so these URLs
 always point at today's images:
 
 | Image | URL |
 | --- | --- |
-| Left | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-left.jpg` |
-| Middle | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-middle.jpg` |
-| Right | `https://github.com/ianmatson/ai-wallpapers/releases/latest/download/landscape-right.jpg` |
+| Left | `https://github.com/ianmatson/wallpaper-journey/releases/latest/download/landscape-left.jpg` |
+| Middle | `https://github.com/ianmatson/wallpaper-journey/releases/latest/download/landscape-middle.jpg` |
+| Right | `https://github.com/ianmatson/wallpaper-journey/releases/latest/download/landscape-right.jpg` |
 
 Grab one by hand whenever you like, or subscribe below and your device updates
 itself every morning. No GitHub account or token needed.
@@ -28,7 +28,7 @@ for the command contract.
 ## Subscribe — macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer/install-macos.sh | zsh
+curl -fsSL https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/install-macos.sh | zsh
 ```
 
 That installs or updates DailyWall without admin rights, downloads today's
@@ -39,7 +39,7 @@ the equivalent manual installation is:
 <summary>Manual installation</summary>
 
 ```sh
-BASE=https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer
+BASE=https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer
 mkdir -p ~/DailyWall
 curl -fsSL -o ~/DailyWall/wallpaper.sh "$BASE/wallpaper.sh"
 curl -fsSL -o ~/DailyWall/wallpaper-watcher.js "$BASE/wallpaper-watcher.js"
@@ -95,7 +95,7 @@ action and select the wallpaper you want it to change each day.
 In PowerShell (no admin needed):
 
 ```powershell
-$Base = "https://raw.githubusercontent.com/ianmatson/ai-wallpapers/main/consumer"
+$Base = "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer"
 $Dir  = "$env:USERPROFILE\DailyWall"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 iwr "$Base/wallpaper.ps1" -OutFile "$Dir\wallpaper.ps1"
