@@ -7,7 +7,7 @@
 
 set -u
 
-VERSION=1   # bump on any consumer change, and keep consumer/VERSION in the repo equal
+VERSION=2   # bump on any consumer change, and keep consumer/VERSION in the repo equal
 
 # Don't inherit whatever PATH the caller had. Several steps here fail quietly
 # when a tool is missing — a lost osascript reads as "no Spaces reference
@@ -635,6 +635,7 @@ self_destruct() {
 update_notice() {
   local remote
   local noticed=0
+  local choice
 
   remote=$(curl -fsSL --max-time 10 \
     "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/VERSION" \
@@ -647,8 +648,17 @@ update_notice() {
   (( remote > noticed )) || return 0
 
   note "consumer version $remote is available (this is $VERSION); announcing it"
-  osascript -e 'display notification "A Wallpaper Journey update is available. Rerun the installer from the README to get it." with title "Wallpaper Journey"' 2>/dev/null || true
+  # The marker is written before the dialog so a version is announced at most
+  # once, whatever happens to the dialog.
   print -r -- "$remote" > "$NOTICE_MARKER"
+
+  # A macOS notification cannot carry a button, so ask with a dialog instead.
+  # It dismisses itself, and "Later" simply means this version stays quiet —
+  # the marker above already saw to that.
+  choice=$(osascript -e 'display dialog "A new Wallpaper Journey version is available. Rerun the installer from the README to get it." with title "Wallpaper Journey" buttons {"Later", "Open the README"} default button "Open the README" giving up after 60' 2>/dev/null) || return 0
+  if [[ "$choice" == *"button returned:Open the README"* && "$choice" != *"gave up:true"* ]]; then
+    open "$REPO#updating--macos" 2>/dev/null || true
+  fi
 }
 
 # Everything a bug report needs, in one paste.
