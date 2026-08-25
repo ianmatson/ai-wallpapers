@@ -332,12 +332,23 @@ case "${1:-refresh}" in
       self_destruct "$WATCHER_JOB"
     fi
     ;;
+  visit|--visit)
+    # Arriving on a Space. Checking before applying matters: a Space carrying a
+    # wallpaper the user chose has to end the subscription, not be overwritten
+    # by it.
+    if manual_change; then
+      self_destruct "$WATCHER_JOB"
+    else
+      tag=$(cached_tag) || exit 0
+      apply_tag "$tag"
+    fi
+    ;;
   uninstall|--uninstall)
     print -r -- "Removing DailyWall's launch agents, scripts, images, and logs."
     uninstall "$WATCHER_JOB"
     ;;
   *)
-    print -u2 -- "usage: $0 [--refresh|--apply|--check|--uninstall]"
+    print -u2 -- "usage: $0 [--refresh|--apply|--visit|--check|--uninstall]"
     exit 2
     ;;
 esac

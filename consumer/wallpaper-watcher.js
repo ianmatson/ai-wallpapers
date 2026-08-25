@@ -3,11 +3,17 @@
 ObjC.import("AppKit");
 ObjC.import("Foundation");
 
+// The wallpaper agent rewrites this file whenever any wallpaper changes, on any
+// Space, so its timestamp is the signal that the user has chosen their own.
+const STORE_PATH = ObjC.unwrap($.NSHomeDirectory()) +
+  "/Library/Application Support/com.apple.wallpaper/Store/Index.plist";
+
 let wallpaperScript = "";
 let delegate = null;
 let applyTimer = null;
 let followUpTimer = null;
 let checkTimer = null;
+let lastStoreStamp = 0;
 
 function runWallpaperScript(action) {
   const task = $.NSTask.alloc.init;
@@ -16,48 +22,43 @@ function runWallpaperScript(action) {
   task.launch;
 }
 
-function scheduleApply(delay) {
-  if (applyTimer !== null) {
-    applyTimer.invalidate;
+function storeStamp() {
+  const attributes = $.NSFileManager.defaultManager
+    .attributesOfItemAtPathError(STORE_PATH, Ref());
+  if (attributes.isNil()) return 0;
+  const modified = attributes.objectForKey("NSFileModificationDate");
+  if (modified.isNil()) return 0;
+  return modified.timeIntervalSince1970;
+}
+
+function scheduleOnce(timer, delay, selector) {
+  if (timer !== null) {
+    timer.invalidate;
   }
-  applyTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
+  return $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
     delay,
     delegate,
-    "applyWallpaper:",
+    selector,
     null,
     false
   );
 }
 
-// A Space switch reports itself before the switch has finished, so an apply
-// sent straight away still lands on the Space being left. Sending a second one
-// after the transition settles is what makes the new Space update on arrival
-// instead of only after leaving and coming back.
-function scheduleApplyPair(delay, followUpDelay) {
-  scheduleApply(delay);
-  if (followUpTimer !== null) {
-    followUpTimer.invalidate;
-  }
-  followUpTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
-    followUpDelay,
-    delegate,
-    "applyWallpaper:",
-    null,
-    false
-  );
+function scheduleApply(delay) {
+  applyTimer = scheduleOnce(applyTimer, delay, "applyWallpaper:");
 }
 
 function scheduleCheck(delay) {
-  if (checkTimer !== null) {
-    checkTimer.invalidate;
-  }
-  checkTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
-    delay,
-    delegate,
-    "checkWallpaper:",
-    null,
-    false
-  );
+  checkTimer = scheduleOnce(checkTimer, delay, "checkWallpaper:");
+}
+
+// A Space switch reports itself before the switch has finished, so an action
+// sent straight away still lands on the Space being left. Sending a second one
+// after the transition settles is what makes the new Space be handled on
+// arrival instead of only after leaving and coming back.
+function scheduleVisitPair(delay, followUpDelay) {
+  applyTimer = scheduleOnce(applyTimer, delay, "visitSpace:");
+  followUpTimer = scheduleOnce(followUpTimer, followUpDelay, "visitSpace:");
 }
 
 ObjC.registerSubclass({
@@ -74,28 +75,34 @@ ObjC.registerSubclass({
     "activeSpaceChanged:": {
       types: ["void", ["id"]],
       implementation: function () {
-        // Spaces set up by an older version still point at a dated filename,
-        // so give each one the fixed path as it is visited. Once a Space has
-        // been through this it keeps up on its own, because the daily run
-        // replaces the bytes behind that path.
-        scheduleApplyPair(0.6, 2.5);
+        // --visit stops the subscription if this Space carries a wallpaper the
+        // user chose, and otherwise moves a Space set up by an older version
+        // onto the fixed path.
+        scheduleVisitPair(0.6, 2.5);
       },
     },
-    "desktopBackgroundChanged:": {
+    "pollStore:": {
       types: ["void", ["id"]],
       implementation: function () {
-        // Wait past the apply debounce above so a display change never gets
-        // judged before our own reapply has run.
-        scheduleCheck(8);
+        const stamp = storeStamp();
+        if (stamp === 0 || stamp === lastStoreStamp) return;
+        // Skip the very first reading, which only establishes a baseline.
+        const known = lastStoreStamp !== 0;
+        lastStoreStamp = stamp;
+        if (known) scheduleCheck(1.5);
       },
     },
     "applyWallpaper:": {
       types: ["void", ["id"]],
       implementation: function () {
-        // Applying the same image twice costs nothing visible, so the pair of
-        // timers above needs no bookkeeping beyond clearing itself.
         applyTimer = null;
         runWallpaperScript("--apply");
+      },
+    },
+    "visitSpace:": {
+      types: ["void", ["id"]],
+      implementation: function () {
+        runWallpaperScript("--visit");
       },
     },
     "checkWallpaper:": {
@@ -119,7 +126,7 @@ function run(argv) {
   app.delegate = delegate;
   app.setActivationPolicy($.NSApplicationActivationPolicyProhibited);
 
-  // Catch up whichever Space the user switches to.
+  // Handle whichever Space the user switches to.
   $.NSWorkspace.sharedWorkspace.notificationCenter.addObserverSelectorNameObject(
     delegate,
     "activeSpaceChanged:",
@@ -127,15 +134,20 @@ function run(argv) {
     $()
   );
 
-  // A manual wallpaper change means the user opted out; --check then uninstalls
-  // everything. The notification gives an instant reaction, the repeating timer
-  // catches macOS versions where the notification never arrives.
-  $.NSDistributedNotificationCenter.defaultCenter.addObserverSelectorNameObject(
+  // Watching the store's timestamp is what makes a manual wallpaper change
+  // register within seconds. macOS no longer posts a notification for it, so
+  // there is nothing to subscribe to. Reading one timestamp costs nothing, and
+  // the script only runs when the file has actually changed.
+  lastStoreStamp = storeStamp();
+  $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
+    2,
     delegate,
-    "desktopBackgroundChanged:",
-    "com.apple.desktop",
-    "BackgroundChanged"
+    "pollStore:",
+    null,
+    true
   );
+
+  // Backstop for anything the timestamp watch misses.
   $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
     300,
     delegate,
