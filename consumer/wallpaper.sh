@@ -6,6 +6,12 @@
 
 set -u
 
+# Don't inherit whatever PATH the caller had. Several steps here fail quietly
+# when a tool is missing — a lost osascript reads as "no Spaces reference
+# anything", which would let pruning delete an image a desktop is still using.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+
 REPO="https://github.com/ianmatson/wallpaper-journey"
 DIR="$HOME/WallpaperJourney"   # where images are saved — change this and both plist paths together
 # Installs predating the rename kept their images here. The folder is left
@@ -77,6 +83,53 @@ publish_stable() {
   return 0
 }
 
+# A Space set up before the fixed paths existed still records a dated filename,
+# and one from before the rename records the old folder. Neither catches up on
+# its own unless that desktop happens to be visited, so give those names today's
+# panels and put the folder symlink back when a Space still needs it. The agent
+# reload then reaches every desktop, whichever path it recorded.
+#
+# A dated name a Space still points at stops being an archive entry and becomes
+# another window onto today's image. Days nothing points at stay as they were.
+converge_stale_paths() {
+  local -a referenced
+  local path
+  local base
+  local target
+  local tmp
+
+  referenced=(${(f)"$(referenced_images)"})
+  (( ${#referenced} )) || return 0
+
+  if [[ ! -e "$LEGACY_DIR" && "${referenced[*]}" == *"$LEGACY_DIR/"* ]]; then
+    ln -s -- "$DIR" "$LEGACY_DIR" 2>/dev/null || true
+  fi
+
+  for path in $referenced; do
+    base="${path:t}"
+    # The fixed paths already hold today's image.
+    [[ "$base" == wall-*.jpg ]] || continue
+
+    target="$STABLE_PREFIX-middle.jpg"
+    case "$base" in
+      *-landscape-left.jpg)  target="$STABLE_PREFIX-left.jpg" ;;
+      *-landscape-right.jpg) target="$STABLE_PREFIX-right.jpg" ;;
+    esac
+    [[ -s "$target" ]] || continue
+
+    # Always work in the real folder; a legacy path resolves to the same file
+    # through the symlink.
+    path="$DIR/$base"
+    [[ "$target" -ef "$path" ]] && continue
+
+    tmp="$path.new.$$"
+    ln -f -- "$target" "$tmp" 2>/dev/null || cp -f -- "$target" "$tmp" \
+      || { rm -f -- "$tmp"; continue; }
+    mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; continue; }
+    STABLE_CHANGED=1
+  done
+}
+
 # Restarting the wallpaper agent makes it reload every Space from disk. Because
 # each Space points at a path whose bytes we just replaced, they all come back
 # showing today's image — no per-Space API, and the agent's own store is never
@@ -144,16 +197,58 @@ EOF
 }
 
 # Prints "ours" when every screen's wallpaper lives in $DIR or the folder used
-# before the rename, "theirs" when any screen shows something else, and nothing
-# when the answer is unknowable.
-wallpaper_state() {
-  osascript -l JavaScript - "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
+# before the rename, "theirs <unix-time>" when any screen shows something else,
+# and nothing when the answer is unknowable. The time says when that wallpaper
+# was chosen, which is what separates a desktop this subscription has never
+# reached from one the user has just changed.
+wallpaper_status() {
+  osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
+function imagePath(desktop) {
+  const content = desktop.objectForKey("Content");
+  if (content.isNil()) return null;
+  const choices = content.objectForKey("Choices");
+  if (choices.isNil() || choices.count === 0) return null;
+  const configuration = choices.objectAtIndex(0).objectForKey("Configuration");
+  if (configuration.isNil() || !configuration.isKindOfClass($.NSData)) return null;
+  const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+    configuration, 0, Ref(), Ref());
+  if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return null;
+  const url = inner.objectForKey("url");
+  if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return null;
+  const relative = ObjC.unwrap(url.objectForKey("relative"));
+  if (!relative) return null;
+  return ObjC.unwrap($.NSURL.URLWithString(relative).path);
+}
+
+// Newest time any desktop recorded this exact image being chosen.
+function chosenAt(store, wanted) {
+  let newest = 0;
+  function walk(value) {
+    if (value.isNil()) return;
+    if (value.isKindOfClass($.NSArray)) { value.js.forEach(walk); return; }
+    if (!value.isKindOfClass($.NSDictionary)) return;
+    const desktop = value.objectForKey("Desktop");
+    if (!desktop.isNil() && desktop.isKindOfClass($.NSDictionary) &&
+        imagePath(desktop) === wanted) {
+      const lastSet = desktop.objectForKey("LastSet");
+      if (!lastSet.isNil()) {
+        newest = Math.max(newest, lastSet.timeIntervalSince1970);
+      }
+    }
+    value.allValues.js.forEach(walk);
+  }
+  walk(store);
+  return newest;
+}
+
 function run(argv) {
   ObjC.import("AppKit");
-  const dirs = argv.map(function (d) { return d.replace(/\/*$/, "/"); });
+  const dirs = argv.slice(1).map(function (d) { return d.replace(/\/*$/, "/"); });
   const ws = $.NSWorkspace.sharedWorkspace;
   const screens = $.NSScreen.screens.js;
   if (screens.length === 0) return "";
+
+  let foreign = null;
   for (const screen of screens) {
     const url = ws.desktopImageURLForScreen(screen);
     // No answer means unknown, not an opt-out: the wallpaper agent reports
@@ -161,21 +256,50 @@ function run(argv) {
     if (url.isNil()) return "";
     const path = ObjC.unwrap(url.path);
     if (!path) return "";
-    const ours = dirs.some(function (d) { return path.startsWith(d); });
-    if (!ours) return "theirs";
+    if (!dirs.some(function (d) { return path.startsWith(d); })) {
+      foreign = path;
+      break;
+    }
   }
-  return "ours";
+  if (foreign === null) return "ours";
+
+  let chosen = 0;
+  const data = $.NSData.dataWithContentsOfFile(argv[0]);
+  if (!data.isNil()) {
+    const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      data, 0, Ref(), Ref());
+    if (!store.isNil()) chosen = chosenAt(store, foreign);
+  }
+  return "theirs " + Math.round(chosen);
 }
 EOF
 }
 
 manual_change() {
+  local state          # not "status": zsh keeps that one read-only
+  local chosen
+  local applied
+
   [[ -e "$APPLIED_MARKER" ]] || return 1
-  [[ "$(wallpaper_state)" == theirs ]] || return 1
+
+  state="$(wallpaper_status)"
+  [[ "$state" == theirs* ]] || return 1
+  chosen="${state#theirs }"
+  applied=$(stat -f %m "$APPLIED_MARKER" 2>/dev/null) || applied=0
+
+  # A desktop this subscription has never reached still shows whatever the user
+  # had before installing, and overwriting that on arrival is the job — ending
+  # the subscription over it is not. Only a wallpaper chosen after our most
+  # recent apply is a real opt-out. With no time to go on, treat it as one:
+  # losing the subscription is easy to undo, quietly fighting the user is not.
+  if [[ "$chosen" == <-> ]] && (( chosen > 0 )) && (( chosen <= applied )); then
+    return 1
+  fi
+
   # Confirm after a pause so our own apply, caught mid-flight with only some
   # screens set, never reads as a manual change.
   sleep 3
-  [[ "$(wallpaper_state)" == theirs ]]
+  [[ "$(wallpaper_status)" == theirs* ]]
 }
 
 # Removes everything the installer created. $1 is the launchd job the caller
@@ -285,12 +409,19 @@ refresh() {
   tag="${tag##*/}"
   [[ "$tag" == wall-* ]] || return 0
 
+  # A desktop can be behind even when the release has not moved, so catch those
+  # up before the early exit below rather than after it.
+  if [[ -s "$STABLE_PREFIX-middle.jpg" ]]; then
+    converge_stale_paths
+    (( STABLE_CHANGED )) && reload_all_spaces
+  fi
+
   # This runs several times a day so a late release still lands the same day.
   # Once the newest triptych is cached and on screen there is nothing to do,
   # and stopping here avoids re-setting a wallpaper that is already correct.
   if [[ -r "$CURRENT_TAG_FILE" && "$(<"$CURRENT_TAG_FILE")" == "$tag" ]] \
     && [[ -s "$STABLE_PREFIX-middle.jpg" ]] \
-    && [[ "$(wallpaper_state)" == ours ]]; then
+    && [[ "$(wallpaper_status)" == ours ]]; then
     return 0
   fi
 
@@ -315,6 +446,7 @@ refresh() {
   # then make every other Space reload. Order matters: the agent must restart
   # after the new images are in place.
   publish_stable "$tag" || return 1
+  converge_stale_paths
   apply_tag "$tag" || return 1
   if (( STABLE_CHANGED )); then
     # The agent saves its store a few seconds after a wallpaper changes, and a
