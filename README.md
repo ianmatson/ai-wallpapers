@@ -70,9 +70,10 @@ Settings → Displays:
 | 3 | left + middle + right |
 | 4+ | left/middle/right, repeating |
 
-No permission prompts. Adding, removing, or rearranging a monitor reapplies the
-cached images automatically without another download, and so does switching to
-another Space, which is how every desktop on every monitor keeps up. Polling several times a
+No permission prompts. Every desktop (Space) on every monitor is updated by the
+morning run, not just the one you happen to be looking at. Adding, removing, or
+rearranging a monitor reapplies the cached images automatically without another
+download. Polling several times a
 day means a release published late — or one that failed and was retried — still
 reaches you the same day. To download and set today's wallpaper immediately
 instead of waiting for the next poll:
@@ -184,11 +185,19 @@ images automatically from your monitor layout.
   own file: `~/DailyWall` on macOS, `current.jpg` on Windows. If you keep old
   macOS Spaces that still show a pre-DailyWall wallpaper, visiting one can read
   as opting out.
-- On macOS the wallpaper belongs to each Space, and the only public API to set
-  it reaches the Space that is on screen. The watcher therefore reapplies when
-  you switch Spaces, so every Space — including one created after today's
-  download — ends up on the current wallpaper. A Space you have not visited
-  since the download shows the previous image for a moment on arrival.
+- On macOS every Space stores its wallpaper as a file path, and the only public
+  API to set one reaches the Space on screen. So the wallpaper is always the
+  same three paths — `current-left.jpg`, `current-middle.jpg`,
+  `current-right.jpg` — and the daily run swaps the images behind them and
+  restarts the wallpaper agent, which reloads every Space from disk. One
+  download in the morning reaches all of them, and a Space made later inherits
+  a path that is already current.
+- Those fixed paths are hard links to the dated files, so the archive costs no
+  extra disk, and pruning a dated name never takes the image away from a Space
+  still using it.
+- Spaces set up by an earlier version still point at a dated filename. Each one
+  moves to the fixed path the first time you visit it after upgrading; until
+  then it keeps showing the image it last received.
 - If the machine is asleep at a scheduled poll, both platforms run the job at
   the next wake (Windows via the task's `StartWhenAvailable`), and the remaining
   polls that day give it more chances.

@@ -6,6 +6,7 @@ ObjC.import("Foundation");
 let wallpaperScript = "";
 let delegate = null;
 let applyTimer = null;
+let followUpTimer = null;
 let checkTimer = null;
 
 function runWallpaperScript(action) {
@@ -21,6 +22,24 @@ function scheduleApply(delay) {
   }
   applyTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
     delay,
+    delegate,
+    "applyWallpaper:",
+    null,
+    false
+  );
+}
+
+// A Space switch reports itself before the switch has finished, so an apply
+// sent straight away still lands on the Space being left. Sending a second one
+// after the transition settles is what makes the new Space update on arrival
+// instead of only after leaving and coming back.
+function scheduleApplyPair(delay, followUpDelay) {
+  scheduleApply(delay);
+  if (followUpTimer !== null) {
+    followUpTimer.invalidate;
+  }
+  followUpTimer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(
+    followUpDelay,
     delegate,
     "applyWallpaper:",
     null,
@@ -55,11 +74,11 @@ ObjC.registerSubclass({
     "activeSpaceChanged:": {
       types: ["void", ["id"]],
       implementation: function () {
-        // Wallpaper is per Space, and the only public API to set it reaches
-        // just the Space on screen. Reapplying on arrival is what makes every
-        // Space — including one created after today's download — end up with
-        // the current wallpaper.
-        scheduleApply(0.5);
+        // Spaces set up by an older version still point at a dated filename,
+        // so give each one the fixed path as it is visited. Once a Space has
+        // been through this it keeps up on its own, because the daily run
+        // replaces the bytes behind that path.
+        scheduleApplyPair(0.6, 2.5);
       },
     },
     "desktopBackgroundChanged:": {
@@ -73,6 +92,8 @@ ObjC.registerSubclass({
     "applyWallpaper:": {
       types: ["void", ["id"]],
       implementation: function () {
+        // Applying the same image twice costs nothing visible, so the pair of
+        // timers above needs no bookkeeping beyond clearing itself.
         applyTimer = null;
         runWallpaperScript("--apply");
       },
