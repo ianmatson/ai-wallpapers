@@ -70,10 +70,11 @@ Settings → Displays:
 | 3 | left + middle + right |
 | 4+ | left/middle/right, repeating |
 
-No permission prompts. Every desktop (Space) on every monitor is updated by the
-morning run, not just the one you happen to be looking at. Adding, removing, or
-rearranging a monitor reapplies the cached images automatically without another
-download. Polling several times a day means a release published late — or one
+No permission prompts. The desktops (Spaces) on screen change straight away, and
+each of your other desktops takes today's image the first time you switch to it
+after installing. From then on that desktop is updated by the morning run too,
+whether or not you are looking at it. Adding, removing, or rearranging a monitor
+reapplies the cached images automatically without another download. Polling several times a day means a release published late — or one
 that failed and was retried — still reaches you the same day. To download and
 set today's wallpaper immediately instead of waiting for the next poll:
 

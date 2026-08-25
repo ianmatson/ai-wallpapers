@@ -21,6 +21,8 @@ LEGACY_DIR="$HOME/DailyWall"
 KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"
 APPLIED_MARKER="$DIR/.applied"
+RELOAD_MARKER="$DIR/.reloading"
+QUIET_AFTER_RELOAD=30   # seconds to leave the restarting wallpaper agent alone
 # Every Space stores its own wallpaper as a file path. Pointing them all at
 # these three unchanging paths is what lets one morning download reach every
 # desktop: the paths stay put and only the bytes behind them change.
@@ -134,8 +136,21 @@ converge_stale_paths() {
 # each Space points at a path whose bytes we just replaced, they all come back
 # showing today's image — no per-Space API, and the agent's own store is never
 # written to. SIP blocks launchctl kickstart for this service, so signal it.
+#
+# The marker dates the restart. Until the agent has read its store back it
+# answers with whatever it likes, and the watcher must not read one of those
+# answers as the user choosing a wallpaper.
 reload_all_spaces() {
+  : > "$RELOAD_MARKER"
   killall WallpaperAgent 2>/dev/null || true
+}
+
+# True while the wallpaper agent is still coming back from our own reload.
+reloading() {
+  local stamp
+
+  stamp=$(stat -f %m "$RELOAD_MARKER" 2>/dev/null) || return 1
+  (( $(date +%s) - stamp < QUIET_AFTER_RELOAD ))
 }
 
 apply_tag() {
@@ -198,9 +213,10 @@ EOF
 
 # Prints "ours" when every screen's wallpaper lives in $DIR or the folder used
 # before the rename, "theirs <unix-time>" when any screen shows something else,
-# and nothing when the answer is unknowable. The time says when that wallpaper
-# was chosen, which is what separates a desktop this subscription has never
-# reached from one the user has just changed.
+# "theirs unknown" when it does but the store cannot date it, and nothing when
+# the answer is unknowable. The time says when that wallpaper was chosen, which
+# is what separates a desktop this subscription has never reached from one the
+# user has just changed.
 wallpaper_status() {
   osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
 function imagePath(desktop) {
@@ -220,25 +236,37 @@ function imagePath(desktop) {
   return ObjC.unwrap($.NSURL.URLWithString(relative).path);
 }
 
-// Newest time any desktop recorded this exact image being chosen.
-function chosenAt(store, wanted) {
-  let newest = 0;
+// When was the wallpaper we are looking at chosen? A desktop showing an image
+// file answers exactly, by the path it recorded. A desktop showing one of
+// Apple's own wallpapers — dynamic, aerial, or a solid color — records no file
+// at all and so can never match a path, which is why the newest time on any
+// desktop that is not ours has to answer for it. Without that fallback every
+// such desktop reads as undatable, and an undatable desktop used to end the
+// subscription on sight.
+function chosenAt(store, wanted, dirs) {
+  let exact = 0;
+  let foreign = 0;
+  function ours(path) {
+    return path !== null && dirs.some(function (d) { return path.startsWith(d); });
+  }
   function walk(value) {
     if (value.isNil()) return;
     if (value.isKindOfClass($.NSArray)) { value.js.forEach(walk); return; }
     if (!value.isKindOfClass($.NSDictionary)) return;
     const desktop = value.objectForKey("Desktop");
-    if (!desktop.isNil() && desktop.isKindOfClass($.NSDictionary) &&
-        imagePath(desktop) === wanted) {
+    if (!desktop.isNil() && desktop.isKindOfClass($.NSDictionary)) {
       const lastSet = desktop.objectForKey("LastSet");
       if (!lastSet.isNil()) {
-        newest = Math.max(newest, lastSet.timeIntervalSince1970);
+        const path = imagePath(desktop);
+        const when = lastSet.timeIntervalSince1970;
+        if (path === wanted) exact = Math.max(exact, when);
+        else if (!ours(path)) foreign = Math.max(foreign, when);
       }
     }
     value.allValues.js.forEach(walk);
   }
   walk(store);
-  return newest;
+  return exact || foreign;
 }
 
 function run(argv) {
@@ -263,43 +291,62 @@ function run(argv) {
   }
   if (foreign === null) return "ours";
 
-  let chosen = 0;
   const data = $.NSData.dataWithContentsOfFile(argv[0]);
-  if (!data.isNil()) {
-    const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-      data, 0, Ref(), Ref());
-    if (!store.isNil()) chosen = chosenAt(store, foreign);
-  }
+  if (data.isNil()) return "theirs unknown";
+  const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+    data, 0, Ref(), Ref());
+  if (store.isNil()) return "theirs unknown";
+  const chosen = chosenAt(store, foreign, dirs);
+  if (chosen === 0) return "theirs unknown";
   return "theirs " + Math.round(chosen);
 }
 EOF
 }
 
-manual_change() {
+# Where the subscription stands on the desktops currently on screen:
+#   optout   the user chose a wallpaper after our most recent apply
+#   ok       every screen is ours, or shows a desktop we have never reached
+#   unknown  a screen is not ours and nothing on hand says when it was chosen
+subscription_state() {
   local state          # not "status": zsh keeps that one read-only
   local chosen
   local applied
 
-  [[ -e "$APPLIED_MARKER" ]] || return 1
+  # Before the first apply there is nothing to opt out of.
+  [[ -e "$APPLIED_MARKER" ]] || { print -r -- ok; return; }
+
+  # None of the agent's answers count while it restarts from our own reload.
+  reloading && { print -r -- unknown; return; }
 
   state="$(wallpaper_status)"
-  [[ "$state" == theirs* ]] || return 1
+  case "$state" in
+    ours) print -r -- ok; return ;;
+    'theirs '*) ;;
+    # No answer at all. Ask again on the next check.
+    *) print -r -- unknown; return ;;
+  esac
+
   chosen="${state#theirs }"
+  # A store we could not read at all. A desktop we have never reached and one
+  # the user has just changed look identical from here, so do neither thing
+  # rather than guess: guessing once cost a subscriber the whole subscription.
+  [[ "$chosen" == <-> ]] || { print -r -- unknown; return; }
+
   applied=$(stat -f %m "$APPLIED_MARKER" 2>/dev/null) || applied=0
 
   # A desktop this subscription has never reached still shows whatever the user
   # had before installing, and overwriting that on arrival is the job — ending
   # the subscription over it is not. Only a wallpaper chosen after our most
-  # recent apply is a real opt-out. With no time to go on, treat it as one:
-  # losing the subscription is easy to undo, quietly fighting the user is not.
-  if [[ "$chosen" == <-> ]] && (( chosen > 0 )) && (( chosen <= applied )); then
-    return 1
-  fi
+  # recent apply is a real opt-out.
+  (( chosen > applied )) || { print -r -- ok; return; }
 
   # Confirm after a pause so our own apply, caught mid-flight with only some
   # screens set, never reads as a manual change.
   sleep 3
-  [[ "$(wallpaper_status)" == theirs* ]]
+  case "$(wallpaper_status)" in
+    'theirs '*) print -r -- optout ;;
+    *) print -r -- ok ;;
+  esac
 }
 
 # Removes everything the installer created. $1 is the launchd job the caller
@@ -322,6 +369,7 @@ uninstall() {
     "$LAUNCH_AGENTS/$WATCHER_JOB.plist" \
     /tmp/wallpaper.log /tmp/wallpaper-watcher.log \
     "$DIR"/wall-*(N) "$STABLE_PREFIX"-*.jpg(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
+    "$RELOAD_MARKER" \
     "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
   rmdir -- "$DIR" 2>/dev/null || true
   # The compatibility symlink left by the rename, but never a real folder that
@@ -459,31 +507,30 @@ refresh() {
 
 case "${1:-refresh}" in
   refresh|--refresh)
-    if manual_change; then
-      self_destruct "$DAILY_JOB"
-    else
-      refresh
-    fi
+    case "$(subscription_state)" in
+      optout) self_destruct "$DAILY_JOB" ;;
+      ok) refresh ;;
+    esac
     ;;
   apply|--apply)
     tag=$(cached_tag) || exit 0
     apply_tag "$tag"
     ;;
   check|--check)
-    if manual_change; then
+    if [[ "$(subscription_state)" == optout ]]; then
       self_destruct "$WATCHER_JOB"
     fi
     ;;
   visit|--visit)
     # Arriving on a Space. Checking before applying matters: a Space carrying a
     # wallpaper the user chose has to end the subscription, not be overwritten
-    # by it.
-    if manual_change; then
-      self_destruct "$WATCHER_JOB"
-    else
-      tag=$(cached_tag) || exit 0
-      apply_tag "$tag"
-    fi
+    # by it. A Space this subscription has never reached is the opposite case,
+    # and taking it over here is the only way it ever gets today's image.
+    case "$(subscription_state)" in
+      optout) self_destruct "$WATCHER_JOB" ;;
+      ok) tag=$(cached_tag) || exit 0
+          apply_tag "$tag" ;;
+    esac
     ;;
   uninstall|--uninstall)
     print -r -- "Removing Wallpaper Journey's launch agents, scripts, images, and logs."
