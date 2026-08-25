@@ -81,6 +81,19 @@ set today's wallpaper immediately instead of waiting for the next poll:
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 ```
 
+### Updating — macOS
+
+Rerun the installer command above; it replaces the scripts and launch agents in
+place. When the repo carries a newer consumer version, the daily poll posts one
+notification per version saying an update is available — nothing ever updates
+itself. That is deliberate: subscribers run code from this repo only at install
+time, with consent, so a repo compromise cannot become code running on their
+machines. Check what you have with:
+
+```sh
+zsh ~/WallpaperJourney/wallpaper.sh --status
+```
+
 ### Uninstall — macOS
 
 You usually never need to: **just set your own wallpaper** in System Settings.

@@ -25,6 +25,7 @@ KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"
 APPLIED_MARKER="$DIR/.applied"
 RELOAD_MARKER="$DIR/.reloading"
+NOTICE_MARKER="$DIR/.update-noticed"   # highest version already announced
 QUIET_AFTER_RELOAD=30   # seconds to leave the restarting wallpaper agent alone
 # Every Space stores its own wallpaper as a file path. Pointing them all at
 # these three unchanging paths is what lets one morning download reach every
@@ -609,7 +610,7 @@ uninstall() {
     "$LOG_DIR/wallpaper.log" "$LOG_DIR/wallpaper-watcher.log" \
     /tmp/wallpaper.log /tmp/wallpaper-watcher.log \
     "$DIR"/wall-*(N) "$STABLE_PREFIX"-*.jpg(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
-    "$RELOAD_MARKER" \
+    "$RELOAD_MARKER" "$NOTICE_MARKER" \
     "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
   rmdir -- "$DIR" "$LOG_DIR" 2>/dev/null || true
   # The compatibility symlink left by the rename, but never a real folder that
@@ -623,6 +624,31 @@ self_destruct() {
   note "manual wallpaper change detected; uninstalling (from $1)"
   osascript -e 'display notification "You set your own wallpaper, so Wallpaper Journey uninstalled itself and removed its files." with title "Wallpaper Journey"' 2>/dev/null || true
   uninstall "$1"
+}
+
+# There is deliberately no auto-updater: subscribers run code from this repo
+# once, at install, with consent — images are the only thing that flows after
+# that, and a repo compromise must not become code running on their machines.
+# So updates are announced, never applied: when the repo carries a newer
+# consumer version, say so in one notification and let the user rerun the
+# installer themselves. The marker keeps each version's announcement to one.
+update_notice() {
+  local remote
+  local noticed=0
+
+  remote=$(curl -fsSL --max-time 10 \
+    "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/VERSION" \
+    2>/dev/null) || return 0
+  [[ "$remote" == <-> ]] || return 0
+  (( remote > VERSION )) || return 0
+
+  [[ -r "$NOTICE_MARKER" ]] && noticed="$(<"$NOTICE_MARKER")"
+  [[ "$noticed" == <-> ]] || noticed=0
+  (( remote > noticed )) || return 0
+
+  note "consumer version $remote is available (this is $VERSION); announcing it"
+  osascript -e 'display notification "A Wallpaper Journey update is available. Rerun the installer from the README to get it." with title "Wallpaper Journey"' 2>/dev/null || true
+  print -r -- "$remote" > "$NOTICE_MARKER"
 }
 
 # Everything a bug report needs, in one paste.
@@ -764,7 +790,7 @@ case "${1:-refresh}" in
   refresh|--refresh)
     case "$(subscription_state)" in
       optout) self_destruct "$DAILY_JOB" ;;
-      ok) refresh ;;
+      ok) refresh; update_notice ;;
     esac
     ;;
   apply|--apply)
