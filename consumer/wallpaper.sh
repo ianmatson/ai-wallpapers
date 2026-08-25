@@ -108,9 +108,12 @@ function run(argv) {
   if (screens.length === 0) return "";
   for (const screen of screens) {
     const url = ws.desktopImageURLForScreen(screen);
-    if (url.isNil()) return "theirs";
+    // No answer means unknown, not an opt-out: the wallpaper agent reports
+    // nothing while it is busy, and guessing there would uninstall us.
+    if (url.isNil()) return "";
     const path = ObjC.unwrap(url.path);
-    if (!path || !path.startsWith(dir)) return "theirs";
+    if (!path) return "";
+    if (!path.startsWith(dir)) return "theirs";
   }
   return "ours";
 }

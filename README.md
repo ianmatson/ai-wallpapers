@@ -71,7 +71,8 @@ Settings → Displays:
 | 4+ | left/middle/right, repeating |
 
 No permission prompts. Adding, removing, or rearranging a monitor reapplies the
-cached images automatically without another download. Polling several times a
+cached images automatically without another download, and so does switching to
+another Space, which is how every desktop on every monitor keeps up. Polling several times a
 day means a release published late — or one that failed and was retried — still
 reaches you the same day. To download and set today's wallpaper immediately
 instead of waiting for the next poll:
@@ -183,8 +184,11 @@ images automatically from your monitor layout.
   own file: `~/DailyWall` on macOS, `current.jpg` on Windows. If you keep old
   macOS Spaces that still show a pre-DailyWall wallpaper, visiting one can read
   as opting out.
-- New macOS Spaces created after the wallpaper is set may not inherit it —
-  known macOS quirk; it corrects itself at the next daily run.
+- On macOS the wallpaper belongs to each Space, and the only public API to set
+  it reaches the Space that is on screen. The watcher therefore reapplies when
+  you switch Spaces, so every Space — including one created after today's
+  download — ends up on the current wallpaper. A Space you have not visited
+  since the download shows the previous image for a moment on arrival.
 - If the machine is asleep at a scheduled poll, both platforms run the job at
   the next wake (Windows via the task's `StartWhenAvailable`), and the remaining
   polls that day give it more chances.

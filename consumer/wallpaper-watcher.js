@@ -52,6 +52,16 @@ ObjC.registerSubclass({
         scheduleApply(2);
       },
     },
+    "activeSpaceChanged:": {
+      types: ["void", ["id"]],
+      implementation: function () {
+        // Wallpaper is per Space, and the only public API to set it reaches
+        // just the Space on screen. Reapplying on arrival is what makes every
+        // Space — including one created after today's download — end up with
+        // the current wallpaper.
+        scheduleApply(0.5);
+      },
+    },
     "desktopBackgroundChanged:": {
       types: ["void", ["id"]],
       implementation: function () {
@@ -87,6 +97,14 @@ function run(argv) {
   delegate = $.DailyWallpaperDisplayWatcher.alloc.init;
   app.delegate = delegate;
   app.setActivationPolicy($.NSApplicationActivationPolicyProhibited);
+
+  // Catch up whichever Space the user switches to.
+  $.NSWorkspace.sharedWorkspace.notificationCenter.addObserverSelectorNameObject(
+    delegate,
+    "activeSpaceChanged:",
+    $.NSWorkspaceActiveSpaceDidChangeNotification,
+    $()
+  );
 
   // A manual wallpaper change means the user opted out; --check then uninstalls
   // everything. The notification gives an instant reaction, the repeating timer
