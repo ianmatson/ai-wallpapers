@@ -87,6 +87,295 @@ publish_stable() {
   return 0
 }
 
+# Every question asked of the wallpaper store runs through this one JXA
+# program, so the fragile part — decoding Apple's undocumented Index.plist,
+# with image choices hidden in nested binary plists — lives in exactly one
+# place. $1 selects the question:
+#   status      ours / "theirs <unix-time>" / "theirs unknown" / nothing
+#   referenced  paths under our folders that some desktop still points at
+#   converge    rewrite the store so every desktop points at the fixed paths
+# The callers below document what each answer means.
+store_query() {
+  osascript -l JavaScript - "$1" "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
+function run(argv) {
+  ObjC.import("AppKit");
+  const mode = argv[0];
+  const storePath = argv[1];
+  const dirs = [argv[2], argv[3]].map(function (d) { return d.replace(/\/*$/, "/"); });
+  const stablePrefix = argv[4];
+
+  // ---- shared decoding helpers ----
+
+  function dict(value) {
+    if (value === null || value === undefined) return null;
+    return !value.isNil() && value.isKindOfClass($.NSDictionary) ? value : null;
+  }
+
+  function parsePlist(data, mutable) {
+    if (data.isNil() || !data.isKindOfClass($.NSData)) return null;
+    // 2 = mutable containers and leaves, so entries can be edited in place.
+    const value = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      data, mutable ? 2 : 0, Ref(), Ref());
+    return value.isNil() ? null : value;
+  }
+
+  function loadStore(mutable) {
+    const store = parsePlist($.NSData.dataWithContentsOfFile(storePath), mutable);
+    return store !== null && store.isKindOfClass($.NSDictionary) ? store : null;
+  }
+
+  function choiceOf(desktop) {
+    if (desktop === null) return null;
+    const content = dict(desktop.objectForKey("Content"));
+    if (content === null) return null;
+    const choices = content.objectForKey("Choices");
+    if (choices.isNil() || !choices.isKindOfClass($.NSArray) || choices.count === 0) return null;
+    const choice = choices.objectAtIndex(0);
+    return choice.isKindOfClass($.NSDictionary) ? choice : null;
+  }
+
+  // The file path inside one Configuration blob, or null.
+  function pathFromConfig(cfg) {
+    const inner = parsePlist(cfg, false);
+    if (inner === null || !inner.isKindOfClass($.NSDictionary)) return null;
+    const url = dict(inner.objectForKey("url"));
+    if (url === null) return null;
+    const relative = ObjC.unwrap(url.objectForKey("relative"));
+    if (!relative) return null;
+    return ObjC.unwrap($.NSURL.URLWithString(relative).path);
+  }
+
+  function imagePath(desktop) {
+    const choice = choiceOf(dict(desktop));
+    if (choice === null) return null;
+    if (ObjC.unwrap(choice.objectForKey("Provider")) !== "com.apple.wallpaper.choice.image") return null;
+    return pathFromConfig(choice.objectForKey("Configuration"));
+  }
+
+  function ours(path) {
+    return path !== null && dirs.some(function (d) { return path.startsWith(d); });
+  }
+
+  function lastSet(desktop) {
+    const stamp = desktop.objectForKey("LastSet");
+    return stamp.isNil() ? 0 : stamp.timeIntervalSince1970;
+  }
+
+  // ---- status ----
+
+  // When was the wallpaper we are looking at chosen? A desktop showing an
+  // image file answers exactly, by the path it recorded. A desktop showing one
+  // of Apple's own wallpapers — dynamic, aerial, or a solid color — records no
+  // file at all and so can never match a path, which is why the newest time on
+  // any desktop that is not ours has to answer for it. Without that fallback
+  // every such desktop reads as undatable, and an undatable desktop used to
+  // end the subscription on sight.
+  function chosenAt(store, wanted) {
+    let exact = 0;
+    let foreign = 0;
+    function walk(value) {
+      if (value.isNil()) return;
+      if (value.isKindOfClass($.NSArray)) { value.js.forEach(walk); return; }
+      if (!value.isKindOfClass($.NSDictionary)) return;
+      const desktop = dict(value.objectForKey("Desktop"));
+      if (desktop !== null) {
+        const stamp = desktop.objectForKey("LastSet");
+        if (!stamp.isNil()) {
+          const path = imagePath(desktop);
+          const when = stamp.timeIntervalSince1970;
+          if (path === wanted) exact = Math.max(exact, when);
+          else if (!ours(path)) foreign = Math.max(foreign, when);
+        }
+      }
+      value.allValues.js.forEach(walk);
+    }
+    walk(store);
+    return exact || foreign;
+  }
+
+  function statusMode() {
+    const ws = $.NSWorkspace.sharedWorkspace;
+    const screens = $.NSScreen.screens.js;
+    if (screens.length === 0) return "";
+
+    let foreignPath = null;
+    for (const screen of screens) {
+      const url = ws.desktopImageURLForScreen(screen);
+      // No answer means unknown, not an opt-out: the wallpaper agent reports
+      // nothing while it is busy, and guessing there would uninstall us.
+      if (url.isNil()) return "";
+      const path = ObjC.unwrap(url.path);
+      if (!path) return "";
+      if (!ours(path)) {
+        foreignPath = path;
+        break;
+      }
+    }
+    if (foreignPath === null) return "ours";
+
+    const store = loadStore(false);
+    if (store === null) return "theirs unknown";
+    const chosen = chosenAt(store, foreignPath);
+    return chosen === 0 ? "theirs unknown" : "theirs " + Math.round(chosen);
+  }
+
+  // ---- referenced ----
+
+  function referencedMode() {
+    const store = loadStore(false);
+    if (store === null) return "";
+    const found = {};
+    // Walk the whole store and decode any data blob that turns out to be an
+    // image choice, whichever corner of the format it sits in.
+    function walk(value) {
+      if (value.isNil()) return;
+      if (value.isKindOfClass($.NSDictionary)) {
+        value.allValues.js.forEach(walk);
+      } else if (value.isKindOfClass($.NSArray)) {
+        value.js.forEach(walk);
+      } else if (value.isKindOfClass($.NSData)) {
+        const path = pathFromConfig(value);
+        if (ours(path)) found[path] = true;
+      }
+    }
+    walk(store);
+    return Object.keys(found).join("\n");
+  }
+
+  // ---- converge ----
+
+  function convergeMode() {
+    function stablePath(slot) { return stablePrefix + "-" + slot + ".jpg"; }
+    function slotOf(path) {
+      if (/-left\.jpg$/.test(path)) return "left";
+      if (/-right\.jpg$/.test(path)) return "right";
+      return "middle";
+    }
+
+    const store = loadStore(true);
+    if (store === null) return "";
+
+    let changed = false;
+    let pending = false;
+
+    // Ours under a dated or pre-rename path is repointed at the fixed path for
+    // its panel, so a stale entry can serve as a source like any other.
+    function normalize(desktop) {
+      const path = imagePath(desktop);
+      if (!ours(path)) return;
+      const slot = slotOf(path);
+      if (path === stablePath(slot)) return;
+      const choice = choiceOf(desktop);
+      const inner = parsePlist(choice.objectForKey("Configuration"), true);
+      if (inner === null || !inner.isKindOfClass($.NSDictionary)) return;
+      const url = dict(inner.objectForKey("url"));
+      if (url === null) return;
+      url.setObjectForKey(
+        ObjC.unwrap($.NSURL.fileURLWithPath(stablePath(slot)).absoluteString), "relative");
+      // 200 = binary plist, the format the agent writes itself.
+      const rewritten = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+        inner, 200, 0, Ref());
+      if (rewritten.isNil()) return;
+      choice.setObjectForKey(rewritten, "Configuration");
+      changed = true;
+    }
+
+    // Deep, independent copy, via the same serializer that writes the file.
+    function duplicate(desktop) {
+      const blob = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+        desktop, 200, 0, Ref());
+      if (blob.isNil()) return null;
+      const copy = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+        blob, 2, Ref(), Ref());
+      return copy.isNil() ? null : copy;
+    }
+
+    const displays = dict(store.objectForKey("Displays"));
+    if (displays === null) return "";
+    const spaces = dict(store.objectForKey("Spaces"));
+
+    // Everything on one display converges to one entry, so gather each
+    // display's holders first: its own entry, plus each of its Spaces'
+    // per-display entry and Default twin.
+    const byDisplay = {};
+    function holdersFor(key) {
+      return byDisplay[key] || (byDisplay[key] = []);
+    }
+    displays.allKeys.js.forEach(function (dkey) {
+      const entry = dict(displays.objectForKey(dkey));
+      if (entry !== null) holdersFor(ObjC.unwrap(dkey)).push(entry);
+    });
+    if (spaces !== null) {
+      spaces.allKeys.js.forEach(function (skey) {
+        const space = dict(spaces.objectForKey(skey));
+        if (space === null) return;
+        const perDisplay = dict(space.objectForKey("Displays"));
+        if (perDisplay === null) return;
+        const def = dict(space.objectForKey("Default"));
+        perDisplay.allKeys.js.forEach(function (dkey) {
+          const holder = dict(perDisplay.objectForKey(dkey));
+          if (holder === null) return;
+          holdersFor(ObjC.unwrap(dkey)).push(holder);
+          if (def !== null) holdersFor(ObjC.unwrap(dkey)).push(def);
+        });
+      });
+    }
+
+    Object.keys(byDisplay).forEach(function (dkey) {
+      const holders = byDisplay[dkey];
+
+      // The freshest ours entry on the display is the model everything else
+      // copies. Newest wins because apply_tag's write is always the newest —
+      // right after an install that is the Space it just set, since a
+      // wallpaper the user set by hand lands on the display's own entry.
+      let model = null;
+      let modelStamp = -1;
+      let foreign = false;
+      holders.forEach(function (holder) {
+        const desktop = dict(holder.objectForKey("Desktop"));
+        if (desktop === null) return;
+        if (!ours(imagePath(desktop))) {
+          foreign = true;
+          return;
+        }
+        if (lastSet(desktop) > modelStamp) {
+          modelStamp = lastSet(desktop);
+          model = desktop;
+        }
+      });
+      if (model === null) {
+        if (foreign) pending = true;
+        return;
+      }
+      normalize(model);
+      const modelPath = imagePath(model);
+
+      holders.forEach(function (holder) {
+        const desktop = holder.objectForKey("Desktop");
+        if (!desktop.isNil() && imagePath(desktop) === modelPath) return;
+        const copy = duplicate(model);
+        if (copy === null) return;
+        holder.setObjectForKey(copy, "Desktop");
+        changed = true;
+      });
+    });
+
+    if (changed) {
+      const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+        store, 200, 0, Ref());
+      if (outData.isNil() || !outData.writeToFileAtomically(storePath, true)) changed = false;
+    }
+    return (changed ? "changed " : "") + (pending ? "pending" : "");
+  }
+
+  if (mode === "status") return statusMode();
+  if (mode === "referenced") return referencedMode();
+  if (mode === "converge") return convergeMode();
+  return "";
+}
+EOF
+}
+
 # The store is the wallpaper agent's memory of every desktop, on screen or not.
 # Editing it is the only way to reach a Space that is not visible: the public
 # API stops at the active Space of each display, and Apple ships nothing else.
@@ -114,180 +403,7 @@ converge_store() {
   local out
 
   CONVERGE_PENDING=0
-
-  out=$(osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
-function run(argv) {
-  ObjC.import("Foundation");
-  const storePath = argv[0];
-  const dirs = [argv[1], argv[2]].map(function (d) { return d.replace(/\/*$/, "/"); });
-  const stablePrefix = argv[3];
-
-  function stablePath(slot) { return stablePrefix + "-" + slot + ".jpg"; }
-  function slotOf(path) {
-    if (/-left\.jpg$/.test(path)) return "left";
-    if (/-right\.jpg$/.test(path)) return "right";
-    return "middle";
-  }
-
-  const data = $.NSData.dataWithContentsOfFile(storePath);
-  if (data.isNil()) return "";
-  // 2 = mutable containers and leaves, so entries can be edited in place.
-  const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-    data, 2, Ref(), Ref());
-  if (store.isNil() || !store.isKindOfClass($.NSDictionary)) return "";
-
-  function choiceOf(desktop) {
-    if (desktop.isNil() || !desktop.isKindOfClass($.NSDictionary)) return null;
-    const content = desktop.objectForKey("Content");
-    if (content.isNil() || !content.isKindOfClass($.NSDictionary)) return null;
-    const choices = content.objectForKey("Choices");
-    if (choices.isNil() || !choices.isKindOfClass($.NSArray) || choices.count === 0) return null;
-    const choice = choices.objectAtIndex(0);
-    return choice.isKindOfClass($.NSDictionary) ? choice : null;
-  }
-
-  function imagePath(desktop) {
-    const choice = choiceOf(desktop);
-    if (choice === null) return null;
-    if (ObjC.unwrap(choice.objectForKey("Provider")) !== "com.apple.wallpaper.choice.image") return null;
-    const cfg = choice.objectForKey("Configuration");
-    if (cfg.isNil() || !cfg.isKindOfClass($.NSData)) return null;
-    const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-      cfg, 0, Ref(), Ref());
-    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return null;
-    const url = inner.objectForKey("url");
-    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return null;
-    const relative = ObjC.unwrap(url.objectForKey("relative"));
-    if (!relative) return null;
-    return ObjC.unwrap($.NSURL.URLWithString(relative).path);
-  }
-
-  function ours(path) {
-    return path !== null && dirs.some(function (d) { return path.startsWith(d); });
-  }
-
-  function lastSet(desktop) {
-    const stamp = desktop.objectForKey("LastSet");
-    return stamp.isNil() ? 0 : stamp.timeIntervalSince1970;
-  }
-
-  let changed = false;
-  let pending = false;
-
-  // Ours under a dated or pre-rename path is repointed at the fixed path for
-  // its panel, so a stale entry can serve as a source like any other.
-  function normalize(desktop) {
-    const path = imagePath(desktop);
-    if (!ours(path)) return;
-    const slot = slotOf(path);
-    if (path === stablePath(slot)) return;
-    const choice = choiceOf(desktop);
-    const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-      choice.objectForKey("Configuration"), 2, Ref(), Ref());
-    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return;
-    const url = inner.objectForKey("url");
-    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return;
-    url.setObjectForKey(
-      ObjC.unwrap($.NSURL.fileURLWithPath(stablePath(slot)).absoluteString), "relative");
-    // 200 = binary plist, the format the agent writes itself.
-    const rewritten = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
-      inner, 200, 0, Ref());
-    if (rewritten.isNil()) return;
-    choice.setObjectForKey(rewritten, "Configuration");
-    changed = true;
-  }
-
-  // Deep, independent copy, via the same serializer that writes the file.
-  function duplicate(desktop) {
-    const blob = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
-      desktop, 200, 0, Ref());
-    if (blob.isNil()) return null;
-    const copy = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-      blob, 2, Ref(), Ref());
-    return copy.isNil() ? null : copy;
-  }
-
-  const displays = store.objectForKey("Displays");
-  if (displays.isNil() || !displays.isKindOfClass($.NSDictionary)) return "";
-  const spaces = store.objectForKey("Spaces");
-
-  // Everything on one display converges to one entry, so gather each display's
-  // holders first: its own entry, plus each of its Spaces' per-display entry
-  // and Default twin.
-  const byDisplay = {};
-  function holdersFor(key) {
-    return byDisplay[key] || (byDisplay[key] = []);
-  }
-  displays.allKeys.js.forEach(function (dkey) {
-    const entry = displays.objectForKey(dkey);
-    if (entry.isKindOfClass($.NSDictionary)) holdersFor(ObjC.unwrap(dkey)).push(entry);
-  });
-  if (!spaces.isNil() && spaces.isKindOfClass($.NSDictionary)) {
-    spaces.allKeys.js.forEach(function (skey) {
-      const space = spaces.objectForKey(skey);
-      if (!space.isKindOfClass($.NSDictionary)) return;
-      const perDisplay = space.objectForKey("Displays");
-      if (perDisplay.isNil() || !perDisplay.isKindOfClass($.NSDictionary)) return;
-      const def = space.objectForKey("Default");
-      perDisplay.allKeys.js.forEach(function (dkey) {
-        const holder = perDisplay.objectForKey(dkey);
-        if (!holder.isKindOfClass($.NSDictionary)) return;
-        holdersFor(ObjC.unwrap(dkey)).push(holder);
-        if (!def.isNil() && def.isKindOfClass($.NSDictionary)) {
-          holdersFor(ObjC.unwrap(dkey)).push(def);
-        }
-      });
-    });
-  }
-
-  Object.keys(byDisplay).forEach(function (dkey) {
-    const holders = byDisplay[dkey];
-
-    // The freshest ours entry on the display is the model everything else
-    // copies. Newest wins because apply_tag's write is always the newest —
-    // right after an install that is the Space it just set, since a wallpaper
-    // the user set by hand lands on the display's own entry.
-    let model = null;
-    let modelStamp = -1;
-    let foreign = false;
-    holders.forEach(function (holder) {
-      const desktop = holder.objectForKey("Desktop");
-      if (desktop.isNil() || !desktop.isKindOfClass($.NSDictionary)) return;
-      if (!ours(imagePath(desktop))) {
-        foreign = true;
-        return;
-      }
-      if (lastSet(desktop) > modelStamp) {
-        modelStamp = lastSet(desktop);
-        model = desktop;
-      }
-    });
-    if (model === null) {
-      if (foreign) pending = true;
-      return;
-    }
-    normalize(model);
-    const modelPath = imagePath(model);
-
-    holders.forEach(function (holder) {
-      const desktop = holder.objectForKey("Desktop");
-      if (!desktop.isNil() && imagePath(desktop) === modelPath) return;
-      const copy = duplicate(model);
-      if (copy === null) return;
-      holder.setObjectForKey(copy, "Desktop");
-      changed = true;
-    });
-  });
-
-  if (changed) {
-    const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
-      store, 200, 0, Ref());
-    if (outData.isNil() || !outData.writeToFileAtomically(storePath, true)) changed = false;
-  }
-  return (changed ? "changed " : "") + (pending ? "pending" : "");
-}
-EOF
-)
+  out=$(store_query converge)
   [[ "$out" == *changed* ]] && STABLE_CHANGED=1
   [[ "$out" == *pending* ]] && CONVERGE_PENDING=1
   return 0
@@ -379,89 +495,7 @@ EOF
 # is what separates a desktop this subscription has never reached from one the
 # user has just changed.
 wallpaper_status() {
-  osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
-function imagePath(desktop) {
-  const content = desktop.objectForKey("Content");
-  if (content.isNil()) return null;
-  const choices = content.objectForKey("Choices");
-  if (choices.isNil() || choices.count === 0) return null;
-  const configuration = choices.objectAtIndex(0).objectForKey("Configuration");
-  if (configuration.isNil() || !configuration.isKindOfClass($.NSData)) return null;
-  const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-    configuration, 0, Ref(), Ref());
-  if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return null;
-  const url = inner.objectForKey("url");
-  if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return null;
-  const relative = ObjC.unwrap(url.objectForKey("relative"));
-  if (!relative) return null;
-  return ObjC.unwrap($.NSURL.URLWithString(relative).path);
-}
-
-// When was the wallpaper we are looking at chosen? A desktop showing an image
-// file answers exactly, by the path it recorded. A desktop showing one of
-// Apple's own wallpapers — dynamic, aerial, or a solid color — records no file
-// at all and so can never match a path, which is why the newest time on any
-// desktop that is not ours has to answer for it. Without that fallback every
-// such desktop reads as undatable, and an undatable desktop used to end the
-// subscription on sight.
-function chosenAt(store, wanted, dirs) {
-  let exact = 0;
-  let foreign = 0;
-  function ours(path) {
-    return path !== null && dirs.some(function (d) { return path.startsWith(d); });
-  }
-  function walk(value) {
-    if (value.isNil()) return;
-    if (value.isKindOfClass($.NSArray)) { value.js.forEach(walk); return; }
-    if (!value.isKindOfClass($.NSDictionary)) return;
-    const desktop = value.objectForKey("Desktop");
-    if (!desktop.isNil() && desktop.isKindOfClass($.NSDictionary)) {
-      const lastSet = desktop.objectForKey("LastSet");
-      if (!lastSet.isNil()) {
-        const path = imagePath(desktop);
-        const when = lastSet.timeIntervalSince1970;
-        if (path === wanted) exact = Math.max(exact, when);
-        else if (!ours(path)) foreign = Math.max(foreign, when);
-      }
-    }
-    value.allValues.js.forEach(walk);
-  }
-  walk(store);
-  return exact || foreign;
-}
-
-function run(argv) {
-  ObjC.import("AppKit");
-  const dirs = argv.slice(1).map(function (d) { return d.replace(/\/*$/, "/"); });
-  const ws = $.NSWorkspace.sharedWorkspace;
-  const screens = $.NSScreen.screens.js;
-  if (screens.length === 0) return "";
-
-  let foreign = null;
-  for (const screen of screens) {
-    const url = ws.desktopImageURLForScreen(screen);
-    // No answer means unknown, not an opt-out: the wallpaper agent reports
-    // nothing while it is busy, and guessing there would uninstall us.
-    if (url.isNil()) return "";
-    const path = ObjC.unwrap(url.path);
-    if (!path) return "";
-    if (!dirs.some(function (d) { return path.startsWith(d); })) {
-      foreign = path;
-      break;
-    }
-  }
-  if (foreign === null) return "ours";
-
-  const data = $.NSData.dataWithContentsOfFile(argv[0]);
-  if (data.isNil()) return "theirs unknown";
-  const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-    data, 0, Ref(), Ref());
-  if (store.isNil()) return "theirs unknown";
-  const chosen = chosenAt(store, foreign, dirs);
-  if (chosen === 0) return "theirs unknown";
-  return "theirs " + Math.round(chosen);
-}
-EOF
+  store_query status
 }
 
 # Where the subscription stands on the desktops currently on screen:
@@ -549,41 +583,7 @@ self_destruct() {
 # Paths under $DIR that the wallpaper agent still points a Space at. Read only;
 # an unreadable or reshaped store just yields nothing and pruning carries on.
 referenced_images() {
-  osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
-function run(argv) {
-  ObjC.import("Foundation");
-  const data = $.NSData.dataWithContentsOfFile(argv[0]);
-  if (data.isNil()) return "";
-  const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-    data, 0, Ref(), Ref());
-  if (store.isNil()) return "";
-  const dirs = argv.slice(1).map(function (d) { return d.replace(/\/*$/, "/"); });
-  const found = {};
-
-  // Image choices sit in nested binary plists, so walk the whole store and
-  // decode any data blob that turns out to be one.
-  function walk(value) {
-    if (value.isNil()) return;
-    if (value.isKindOfClass($.NSDictionary)) {
-      value.allValues.js.forEach(walk);
-    } else if (value.isKindOfClass($.NSArray)) {
-      value.js.forEach(walk);
-    } else if (value.isKindOfClass($.NSData)) {
-      const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
-        value, 0, Ref(), Ref());
-      if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return;
-      const url = inner.objectForKey("url");
-      if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return;
-      const relative = ObjC.unwrap(url.objectForKey("relative"));
-      if (!relative) return;
-      const path = ObjC.unwrap($.NSURL.URLWithString(relative).path);
-      if (path && dirs.some(function (d) { return path.startsWith(d); })) found[path] = true;
-    }
-  }
-  walk(store);
-  return Object.keys(found).join("\n");
-}
-EOF
+  store_query referenced
 }
 
 prune_cache() {
