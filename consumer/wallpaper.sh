@@ -3,8 +3,11 @@
 # triptych and applies it. --apply only reapplies the newest cached triptych, so
 # the display watcher never needs network access. --check uninstalls everything
 # if the user has set their own wallpaper, and --uninstall does so on demand.
+# --status prints everything a bug report needs.
 
 set -u
+
+VERSION=1   # bump on any consumer change, and keep consumer/VERSION in the repo equal
 
 # Don't inherit whatever PATH the caller had. Several steps here fail quietly
 # when a tool is missing — a lost osascript reads as "no Spaces reference
@@ -36,6 +39,11 @@ DAILY_JOB="com.ianmatson.wallpaper"
 WATCHER_JOB="com.ianmatson.wallpaper-watcher"
 
 mkdir -p "$DIR"
+
+# Timestamped line for the launchd logs; a manual run shows it on the terminal.
+note() {
+  print -r -- "[$(date '+%F %T')] $*"
+}
 
 cached_tag() {
   local tag=""
@@ -94,6 +102,7 @@ publish_stable() {
 #   status      ours / "theirs <unix-time>" / "theirs unknown" / nothing
 #   referenced  paths under our folders that some desktop still points at
 #   converge    rewrite the store so every desktop points at the fixed paths
+#   describe    one readable line per display and Space, for --status
 # The callers below document what each answer means.
 store_query() {
   osascript -l JavaScript - "$1" "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
@@ -368,9 +377,44 @@ function run(argv) {
     return (changed ? "changed " : "") + (pending ? "pending" : "");
   }
 
+  // ---- describe ----
+
+  function describeMode() {
+    const store = loadStore(false);
+    if (store === null) return "store unreadable";
+    const lines = [];
+    function shown(desktop) {
+      const choice = choiceOf(dict(desktop));
+      if (choice === null) return "none";
+      const path = imagePath(desktop);
+      return path !== null ? path : ObjC.unwrap(choice.objectForKey("Provider"));
+    }
+    const displays = dict(store.objectForKey("Displays"));
+    if (displays !== null) {
+      displays.allKeys.js.forEach(function (dkey) {
+        const entry = dict(displays.objectForKey(dkey));
+        if (entry === null) return;
+        lines.push("display " + ObjC.unwrap(dkey).slice(0, 8) + "  " +
+          shown(entry.objectForKey("Desktop")));
+      });
+    }
+    const spaces = dict(store.objectForKey("Spaces"));
+    if (spaces !== null) {
+      spaces.allKeys.js.forEach(function (skey) {
+        const space = dict(spaces.objectForKey(skey));
+        if (space === null) return;
+        const def = dict(space.objectForKey("Default"));
+        lines.push("space   " + (ObjC.unwrap(skey) || "default*").slice(0, 8) + "  " +
+          (def === null ? "none" : shown(def.objectForKey("Desktop"))));
+      });
+    }
+    return lines.sort().join("\n");
+  }
+
   if (mode === "status") return statusMode();
   if (mode === "referenced") return referencedMode();
   if (mode === "converge") return convergeMode();
+  if (mode === "describe") return describeMode();
   return "";
 }
 EOF
@@ -576,8 +620,41 @@ uninstall() {
 }
 
 self_destruct() {
+  note "manual wallpaper change detected; uninstalling (from $1)"
   osascript -e 'display notification "You set your own wallpaper, so Wallpaper Journey uninstalled itself and removed its files." with title "Wallpaper Journey"' 2>/dev/null || true
   uninstall "$1"
+}
+
+# Everything a bug report needs, in one paste.
+show_status() {
+  local domain="gui/$(id -u)"
+  local job
+  local when
+  local state
+
+  print -r -- "Wallpaper Journey consumer version $VERSION"
+  for job in "$DAILY_JOB" "$WATCHER_JOB"; do
+    if launchctl print "$domain/$job" >/dev/null 2>&1; then
+      print -r -- "$job: loaded"
+    else
+      print -r -- "$job: not loaded"
+    fi
+  done
+  if [[ -r "$CURRENT_TAG_FILE" ]]; then
+    print -r -- "cached release: $(<"$CURRENT_TAG_FILE")"
+  else
+    print -r -- "cached release: none"
+  fi
+  if when=$(stat -f %Sm -t '%F %T' "$APPLIED_MARKER" 2>/dev/null); then
+    print -r -- "last applied: $when"
+  else
+    print -r -- "last applied: never"
+  fi
+  state="$(wallpaper_status)"
+  print -r -- "screens now: ${state:-unknown}"
+  print -r -- "logs: $LOG_DIR"
+  print -r -- "desktops (from the wallpaper store):"
+  store_query describe | sed 's/^/  /'
 }
 
 # Paths under $DIR that the wallpaper agent still points a Space at. Read only;
@@ -624,7 +701,10 @@ refresh() {
   # up before the early exit below rather than after it.
   if [[ -s "$STABLE_PREFIX-middle.jpg" ]]; then
     converge_store
-    (( STABLE_CHANGED )) && reload_all_spaces
+    if (( STABLE_CHANGED )); then
+      note "caught up desktops that were behind; reloading the wallpaper agent"
+      reload_all_spaces
+    fi
   fi
 
   # This runs several times a day so a late release still lands the same day.
@@ -636,6 +716,8 @@ refresh() {
     return 0
   fi
 
+  note "updating to $tag"
+
   # Cache the complete triptych. Display changes can then choose any layout
   # without downloading another asset.
   for slot in left middle right; do
@@ -643,8 +725,8 @@ refresh() {
     [[ -s "$out" ]] && continue
     tmp="$out.download.$$"
     curl -fsSL -o "$tmp" "$REPO/releases/latest/download/landscape-$slot.jpg" \
-      || { rm -f "$tmp"; return 1; }
-    [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+      || { rm -f "$tmp"; note "download failed: landscape-$slot.jpg"; return 1; }
+    [[ -s "$tmp" ]] || { rm -f "$tmp"; note "download empty: landscape-$slot.jpg"; return 1; }
     mv "$tmp" "$out"
   done
 
@@ -661,14 +743,20 @@ refresh() {
   # seconds after a change, and converging a display needs an ours entry on it
   # to copy. Pending means that save has not landed yet, so wait and try again
   # rather than reloading a store that still has desktops to catch.
-  publish_stable "$tag" || return 1
-  apply_tag "$tag" || return 1
+  publish_stable "$tag" || { note "publishing the fixed paths failed"; return 1 }
+  apply_tag "$tag" || { note "applying to the visible displays failed"; return 1 }
+  note "applied $tag to the visible displays"
   for try in 1 2 3 4 5; do
     sleep 5
     converge_store
     (( CONVERGE_PENDING )) || break
+    note "converge pending (agent not settled yet), try $try of 5"
   done
-  (( STABLE_CHANGED )) && reload_all_spaces
+  (( CONVERGE_PENDING )) && note "converge still pending; the next poll retries"
+  if (( STABLE_CHANGED )); then
+    note "reloading the wallpaper agent so every desktop picks up $tag"
+    reload_all_spaces
+  fi
   prune_cache
 }
 
@@ -681,7 +769,11 @@ case "${1:-refresh}" in
     ;;
   apply|--apply)
     tag=$(cached_tag) || exit 0
+    note "display change: reapplying cached $tag"
     apply_tag "$tag"
+    ;;
+  status|--status)
+    show_status
     ;;
   check|--check)
     if [[ "$(subscription_state)" == optout ]]; then
@@ -693,7 +785,7 @@ case "${1:-refresh}" in
     uninstall "$WATCHER_JOB"
     ;;
   *)
-    print -u2 -- "usage: $0 [--refresh|--apply|--check|--uninstall]"
+    print -u2 -- "usage: $0 [--refresh|--apply|--check|--status|--uninstall]"
     exit 2
     ;;
 esac
