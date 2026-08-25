@@ -11,6 +11,7 @@ readonly NATIVE_ROOT="${AI_WALLPAPERS_NATIVE_ROOT:-/Users/ianmatson/Documents/Ba
 readonly STYLE_ROOT="${AI_WALLPAPERS_STYLE_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/style-references}"
 readonly UPSCALED_ROOT="${AI_WALLPAPERS_UPSCALED_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/upscaled}"
 readonly STAGING_ROOT="${AI_WALLPAPERS_STAGING_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/staging}"
+readonly PRIVATE_ROOT="${AI_WALLPAPERS_PRIVATE_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/private}"
 readonly UPSCAYL_INBOX="${AI_WALLPAPERS_UPSCAYL_INBOX:-/Users/ianmatson/Documents/Codex/Upscayl/inbox}"
 readonly UPSCAYL_OUTPUT="${AI_WALLPAPERS_UPSCAYL_OUTPUT:-/Users/ianmatson/Documents/Backgrounds/Upscaled}"
 readonly SEED_IMAGE="${AI_WALLPAPERS_SEED_IMAGE:-/Users/ianmatson/Documents/Backgrounds/digital-alpine-observatory.png}"
@@ -24,6 +25,7 @@ readonly STAGING_DIR="$STAGING_ROOT/$TAG"
 readonly SPOTIFY_BASE="$STAGING_DIR/spotify-playlist.json"
 readonly STORY_FILE="$STAGING_DIR/story.txt"
 readonly NOTES_BASE="$STAGING_DIR/release-notes.txt"
+readonly CONTINUITY_LOG="$PRIVATE_ROOT/daily-continuity-log.md"
 readonly SLOTS=(left middle right)
 
 die() {
@@ -130,7 +132,8 @@ context() {
     --arg spotify_accepted "$spotify_accepted" \
     --arg story_file "$STORY_FILE" \
     --arg notes_file "$notes_file" \
-    '{run_date:$run_date,tag:$tag,native_dir:$native_dir,upscaled_dir:$upscaled_dir,staging_dir:$staging_dir,spotify_accepted:$spotify_accepted,story_file:$story_file,notes_file:$notes_file}'
+    --arg continuity_log "$CONTINUITY_LOG" \
+    '{run_date:$run_date,tag:$tag,native_dir:$native_dir,upscaled_dir:$upscaled_dir,staging_dir:$staging_dir,spotify_accepted:$spotify_accepted,story_file:$story_file,notes_file:$notes_file,continuity_log:$continuity_log}'
 }
 
 preflight() {
@@ -239,6 +242,64 @@ references() {
         historical_context:"narrative and continuity context only; never a source of style cues and never pass these files to the image generator"
       }
     }'
+}
+
+continuity_log() {
+  if [[ -f "$CONTINUITY_LOG" ]]; then
+    cat "$CONTINUITY_LOG"
+  else
+    info "private continuity journal has no entries yet: $CONTINUITY_LOG"
+  fi
+}
+
+append_continuity_log() {
+  local entry_file="${1:-}" content date_header tmp
+  [[ -n "$entry_file" ]] || die "continuity entry file is required"
+  require_file "$entry_file"
+
+  content="$(awk '
+    { lines[NR] = $0 }
+    END {
+      first = 1
+      while (first <= NR && lines[first] ~ /^[[:space:]]*$/) first++
+      last = NR
+      while (last >= first && lines[last] ~ /^[[:space:]]*$/) last--
+      for (i = first; i <= last; i++) print lines[i]
+    }
+  ' "$entry_file")"
+
+  [[ -n "$content" ]] || die "continuity entry is empty"
+  (( ${#content} >= 120 )) || die "continuity entry is too short; write one substantive paragraph"
+  (( ${#content} <= 2000 )) || die "continuity entry is too long; keep it under 2000 characters"
+  awk '
+    /^[[:space:]]*$/ { if (seen) gap = 1; next }
+    { if (gap) invalid = 1; seen = 1 }
+    END { exit invalid }
+  ' "$entry_file" || die "continuity entry must be one paragraph"
+  ! grep -Eq '^[[:space:]]*#' "$entry_file" || die "continuity entry must not contain Markdown headings"
+
+  date_header="## $RUN_DATE"
+  if [[ -f "$CONTINUITY_LOG" ]] && grep -Fqx "$date_header" "$CONTINUITY_LOG"; then
+    die "continuity journal already contains an entry for $RUN_DATE"
+  fi
+
+  mkdir -p "$PRIVATE_ROOT"
+  chmod 700 "$PRIVATE_ROOT"
+  tmp="$(mktemp "$PRIVATE_ROOT/.daily-continuity-log.XXXXXX")"
+  if [[ -f "$CONTINUITY_LOG" ]]; then
+    cat "$CONTINUITY_LOG" >"$tmp"
+  else
+    print -r -- "# Private wallpaper continuity journal" >"$tmp"
+    print -r -- "" >>"$tmp"
+    print -r -- "Agent-only narrative context. Never publish, stage, or use as a source of visual style." >>"$tmp"
+  fi
+  print -r -- "" >>"$tmp"
+  print -r -- "$date_header" >>"$tmp"
+  print -r -- "" >>"$tmp"
+  print -r -- "$content" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$CONTINUITY_LOG"
+  print -r -- "$CONTINUITY_LOG"
 }
 
 validate_native() {
@@ -630,6 +691,8 @@ Commands:
   context                         Print today's paths and tag as JSON.
   preflight                       Validate Git/GitHub state, fetch, and fast-forward pull.
   references                      Print the local reference-image manifest as JSON.
+  continuity-log                  Print the private, agent-only narrative continuity journal.
+  append-continuity-log FILE      Append today's validated one-paragraph private journal entry.
   validate-native                 Validate today's three native PNGs.
   upscale                         Queue, wait for, validate, and archive 4x PNGs.
   inspect-playlist CANDIDATE      Show public metadata for judging a Spotify candidate.
@@ -652,6 +715,8 @@ main() {
     context) context "$@" ;;
     preflight) preflight "$@" ;;
     references) references "$@" ;;
+    continuity-log) continuity_log "$@" ;;
+    append-continuity-log) append_continuity_log "$@" ;;
     validate-native) validate_native "$@" ;;
     upscale) upscale "$@" ;;
     inspect-playlist) inspect_playlist "$@" ;;

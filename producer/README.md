@@ -13,6 +13,8 @@ Everything else is exposed as small, idempotent commands:
 ```sh
 producer/pipeline.zsh preflight
 producer/pipeline.zsh references
+producer/pipeline.zsh continuity-log
+producer/pipeline.zsh append-continuity-log /path/to/one-paragraph-entry.txt
 producer/pipeline.zsh validate-native
 producer/pipeline.zsh upscale
 producer/pipeline.zsh inspect-playlist /path/to/spotify-candidate.json
@@ -36,6 +38,22 @@ producer/pipeline.zsh replace-release-assets
 
 This boundary prevents rendering artifacts or incidental style drift in prior
 generations from becoming self-reinforcing.
+
+## Private continuity journal
+
+The agent-only narrative journal lives at
+`/Users/ianmatson/Documents/Backgrounds/Story/private/daily-continuity-log.md`.
+It is outside the repository, release staging tree, and GitHub release assets.
+Future runs read it with `producer/pipeline.zsh continuity-log` as narrative and
+object-identity context only; it is never a source of visual style.
+
+After a successful release, Codex writes one substantive paragraph to a new
+temporary file and runs `producer/pipeline.zsh append-continuity-log FILE`.
+Entries summarize the day's events, concrete appearance and state of recurring
+objects or places, newly introduced elements, and unresolved story hooks. The
+command is append-only by date, rejects headings and multi-paragraph entries,
+and stores the journal with private filesystem permissions. It is never staged
+or published.
 
 Run `producer/pipeline.zsh context` for the current tag and exact archive paths.
 The automation writes its selected playlist candidate to a new temporary JSON
