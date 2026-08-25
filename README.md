@@ -58,8 +58,10 @@ launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 
 </details>
 
-Downloads all three images once a day at 04:00 and puts one image on each
-monitor, matching your left-to-right arrangement in System Settings → Displays:
+Checks for a new release at 04:00, 08:00, 12:00, 16:00, and 20:00 (and at
+login), downloads all three images the first time it sees one, and puts one
+image on each monitor, matching your left-to-right arrangement in System
+Settings → Displays:
 
 | Monitors | You get |
 | --- | --- |
@@ -69,8 +71,10 @@ monitor, matching your left-to-right arrangement in System Settings → Displays
 | 4+ | left/middle/right, repeating |
 
 No permission prompts. Adding, removing, or rearranging a monitor reapplies the
-cached images automatically without another download. To download and set
-today's wallpaper immediately instead of waiting for 04:00:
+cached images automatically without another download. Polling several times a
+day means a release published late — or one that failed and was retried — still
+reaches you the same day. To download and set today's wallpaper immediately
+instead of waiting for the next poll:
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
@@ -152,6 +156,10 @@ images automatically from your monitor layout.
   Wallpaper Photo** action. Select it again if importing the shortcut does not
   preserve that choice.
 - macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
+- A macOS poll that finds nothing new costs one redirect request and exits
+  without touching your wallpaper, so the extra polls are close to free. Edit
+  the `StartCalendarInterval` entries in
+  `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist` to change the schedule.
 - The macOS display watcher only reads cached files; monitor changes never make
   network requests.
 - Setting your own wallpaper on **any** screen counts as opting out on macOS —
@@ -162,7 +170,8 @@ images automatically from your monitor layout.
   wallpaper, visiting one can read as opting out.
 - New macOS Spaces created after the wallpaper is set may not inherit it —
   known macOS quirk; it corrects itself at the next daily run.
-- If the machine is asleep at 04:00, macOS runs the job at the next wake and
-  Windows waits until tomorrow. Either way you just miss a day, which is fine.
+- If the machine is asleep at a scheduled poll, macOS runs the job at the next
+  wake, and the remaining polls that day give it more chances. Windows still
+  runs once at 04:00 and waits until tomorrow if it misses.
 - Release asset downloads don't count against GitHub API rate limits.
 - Only the newest 30 releases are kept; older days are deleted.

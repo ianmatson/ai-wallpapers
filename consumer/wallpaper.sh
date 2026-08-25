@@ -176,8 +176,16 @@ refresh() {
   tag="${tag##*/}"
   [[ "$tag" == wall-* ]] || return 0
 
-  # Cache the complete triptych once a day. Display changes can then choose any
-  # layout without downloading another asset.
+  # This runs several times a day so a late release still lands the same day.
+  # Once the newest triptych is cached and on screen there is nothing to do,
+  # and stopping here avoids re-setting a wallpaper that is already correct.
+  if [[ -r "$CURRENT_TAG_FILE" && "$(<"$CURRENT_TAG_FILE")" == "$tag" ]] \
+    && [[ "$(wallpaper_state)" == ours ]]; then
+    return 0
+  fi
+
+  # Cache the complete triptych. Display changes can then choose any layout
+  # without downloading another asset.
   for slot in left middle right; do
     out="$DIR/$tag-landscape-$slot.jpg"
     [[ -s "$out" ]] && continue
