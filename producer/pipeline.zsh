@@ -8,6 +8,7 @@ readonly REPOSITORY="${AI_WALLPAPERS_REPOSITORY:-/Users/ianmatson/Repositories/a
 readonly REQUIRED_ORIGIN="${AI_WALLPAPERS_REQUIRED_ORIGIN:-git@github.com:ianmatson/wallpaper-journey.git}"
 readonly GITHUB_REPOSITORY="${AI_WALLPAPERS_GITHUB_REPOSITORY:-ianmatson/wallpaper-journey}"
 readonly NATIVE_ROOT="${AI_WALLPAPERS_NATIVE_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/native}"
+readonly STYLE_ROOT="${AI_WALLPAPERS_STYLE_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/style-references}"
 readonly UPSCALED_ROOT="${AI_WALLPAPERS_UPSCALED_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/upscaled}"
 readonly STAGING_ROOT="${AI_WALLPAPERS_STAGING_ROOT:-/Users/ianmatson/Documents/Backgrounds/Story/staging}"
 readonly UPSCAYL_INBOX="${AI_WALLPAPERS_UPSCAYL_INBOX:-/Users/ianmatson/Documents/Codex/Upscayl/inbox}"
@@ -162,17 +163,27 @@ preflight() {
 
 references() {
   local candidate primary_dir="" primary_kind="" legacy=""
-  local -a complete_dirs primary_files older_files
+  local -a complete_dirs primary_files older_files style_files
 
   [[ -d "$NATIVE_ROOT" ]] || mkdir -p "$NATIVE_ROOT"
+  [[ -d "$STYLE_ROOT" ]] || die "style-reference directory is missing: $STYLE_ROOT"
+
+  while IFS= read -r candidate; do
+    style_files+=("$candidate")
+  done < <(
+    find "$STYLE_ROOT" -type f \
+      \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \) \
+      -print | LC_ALL=C sort
+  )
+  (( ${#style_files[@]} > 0 )) || die "no style references found under: $STYLE_ROOT"
 
   while IFS= read -r candidate; do
     local directory="${candidate:h}"
-    [[ "$directory" == "$NATIVE_DIR" ]] && continue
+    [[ "${directory:t}" == "$TAG" ]] && continue
     if [[ -f "$directory/landscape-middle.png" && -f "$directory/landscape-right.png" ]]; then
       complete_dirs+=("$directory")
     fi
-  done < <(find "$NATIVE_ROOT" -type f -name landscape-left.png -print | LC_ALL=C sort -r)
+  done < <(find "$NATIVE_ROOT" -mindepth 2 -maxdepth 2 -type f -name landscape-left.png -print | LC_ALL=C sort -r)
 
   if (( ${#complete_dirs[@]} > 0 )); then
     primary_dir="${complete_dirs[1]}"
@@ -206,7 +217,8 @@ references() {
     fi
   fi
 
-  local primary_json older_json
+  local style_json primary_json older_json
+  style_json="$(printf '%s\n' "${style_files[@]}" | jq -R . | jq -s .)"
   primary_json="$(printf '%s\n' "${primary_files[@]}" | jq -R . | jq -s .)"
   if (( ${#older_files[@]} > 0 )); then
     older_json="$(printf '%s\n' "${older_files[@]}" | jq -R . | jq -s .)"
@@ -215,10 +227,18 @@ references() {
   fi
 
   jq -n \
+    --argjson style "$style_json" \
     --arg kind "$primary_kind" \
     --argjson primary "$primary_json" \
     --argjson older "$older_json" \
-    '{primary_kind:$kind,primary:$primary,older_style_references:$older}'
+    '{
+      style_references:$style,
+      historical_context:{primary_kind:$kind,primary:$primary,older_context_references:$older},
+      role_policy:{
+        style_references:"exclusive source of visual style, rendering treatment, shape language, palette handling, and texture",
+        historical_context:"narrative and continuity context only; never a source of style cues and never pass these files to the image generator"
+      }
+    }'
 }
 
 validate_native() {
@@ -580,6 +600,28 @@ publish() {
   retention
 }
 
+replace_release_assets() {
+  stage >/dev/null
+  local notes_file="$(active_notes_file)" release_json
+  release_json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets)" || \
+    die "GitHub Release does not exist: $TAG"
+  jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
+    die "existing release assets are invalid; refusing replacement"
+
+  for slot in "${SLOTS[@]}"; do
+    require_file "$STAGING_DIR/landscape-$slot.jpg"
+  done
+
+  gh release upload "$TAG" \
+    "$STAGING_DIR/landscape-left.jpg" \
+    "$STAGING_DIR/landscape-middle.jpg" \
+    "$STAGING_DIR/landscape-right.jpg" \
+    --repo "$GITHUB_REPOSITORY" \
+    --clobber
+  gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file" >/dev/null
+  validate_release
+}
+
 usage() {
   cat <<'EOF'
 Usage: producer/pipeline.zsh COMMAND [ARG]
@@ -595,6 +637,7 @@ Commands:
   replace-playlist CANDIDATE      Append a validated soundtrack revision without deleting the old one.
   stage                           Convert JPEGs and deterministically build release notes.
   publish                         Create/edit, validate, and apply 30-release retention.
+  replace-release-assets          Replace exactly the three assets on today's existing release, then validate.
   validate-release                Validate an already-published release without changing it.
 
 Judgment remains outside this script: image concepts, archive visual review, image generation,
@@ -616,6 +659,7 @@ main() {
     replace-playlist) replace_playlist "$@" ;;
     stage) stage "$@" ;;
     publish) publish "$@" ;;
+    replace-release-assets) replace_release_assets "$@" ;;
     validate-release) validate_release "$@" ;;
     -h|--help|help|"") usage ;;
     *) die "unknown command: $command" ;;

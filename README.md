@@ -119,11 +119,20 @@ iwr "$Base/install.ps1"   -OutFile "$Dir\install.ps1"
 powershell -ExecutionPolicy Bypass -File "$Dir\install.ps1"
 ```
 
-Creates a `DailyWallpaper` scheduled task that runs at 04:00 and sets the
-wallpaper once straight away. Windows gets a single image on all monitors
+Creates a `DailyWallpaper` scheduled task that checks for a new release at
+04:00, 08:00, 12:00, 16:00, and 20:00 (and at logon), and sets the wallpaper
+once straight away. Windows gets a single image on all monitors
 (`landscape-middle.jpg` by default).
 
-Uninstall: `Unregister-ScheduledTask -TaskName DailyWallpaper -Confirm:$false`
+### Uninstall — Windows
+
+As on macOS, **just set your own wallpaper** — the next poll notices, uninstalls
+the task, removes DailyWall's files, and shows a notification. To uninstall by
+hand instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\DailyWall\wallpaper.ps1" -Uninstall
+```
 
 ## Customising
 
@@ -156,22 +165,28 @@ images automatically from your monitor layout.
   Wallpaper Photo** action. Select it again if importing the shortcut does not
   preserve that choice.
 - macOS keeps the last 7 days of images (change `KEEP=7`); Windows keeps one file.
-- A macOS poll that finds nothing new costs one redirect request and exits
-  without touching your wallpaper, so the extra polls are close to free. Edit
-  the `StartCalendarInterval` entries in
-  `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist` to change the schedule.
+- A poll that finds nothing new costs one redirect request on either platform
+  and exits without downloading an image or touching your wallpaper, so the
+  extra polls are close to free. To change the schedule, edit the
+  `StartCalendarInterval` entries in
+  `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist` on macOS, or the
+  trigger hours in `install.ps1` and rerun it on Windows.
 - The macOS display watcher only reads cached files; monitor changes never make
   network requests.
 - Setting your own wallpaper on **any** screen counts as opting out on macOS —
   DailyWall uninstalls itself entirely rather than fight you for the other
-  screens at the next daily run.
-- The opt-out detection compares each screen's current wallpaper path against
-  `~/DailyWall`. If you keep old macOS Spaces that still show a pre-DailyWall
-  wallpaper, visiting one can read as opting out.
+  screens at the next poll.
+- macOS notices an opt-out within seconds, because the watcher listens for the
+  system's background-changed notification. Windows has no equivalent resident
+  process, so it notices at the next scheduled poll — up to four hours later.
+- The opt-out detection compares the current wallpaper path against DailyWall's
+  own file: `~/DailyWall` on macOS, `current.jpg` on Windows. If you keep old
+  macOS Spaces that still show a pre-DailyWall wallpaper, visiting one can read
+  as opting out.
 - New macOS Spaces created after the wallpaper is set may not inherit it —
   known macOS quirk; it corrects itself at the next daily run.
-- If the machine is asleep at a scheduled poll, macOS runs the job at the next
-  wake, and the remaining polls that day give it more chances. Windows still
-  runs once at 04:00 and waits until tomorrow if it misses.
+- If the machine is asleep at a scheduled poll, both platforms run the job at
+  the next wake (Windows via the task's `StartWhenAvailable`), and the remaining
+  polls that day give it more chances.
 - Release asset downloads don't count against GitHub API rate limits.
 - Only the newest 30 releases are kept; older days are deleted.
