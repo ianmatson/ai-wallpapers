@@ -29,6 +29,7 @@ QUIET_AFTER_RELOAD=30   # seconds to leave the restarting wallpaper agent alone
 STABLE_PREFIX="$DIR/current"
 WALLPAPER_STORE="$HOME/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
 STABLE_CHANGED=0
+CONVERGE_PENDING=0
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 DAILY_JOB="com.ianmatson.wallpaper"
 WATCHER_JOB="com.ianmatson.wallpaper-watcher"
@@ -88,19 +89,30 @@ publish_stable() {
 # The store is the wallpaper agent's memory of every desktop, on screen or not.
 # Editing it is the only way to reach a Space that is not visible: the public
 # API stops at the active Space of each display, and Apple ships nothing else.
-# So converge the whole store in one pass: any Space showing something that is
-# not ours takes a copy of its display's entry, and any Space still pointing at
-# a dated filename or the pre-rename folder is repointed at the fixed paths.
-# The agent reload that follows then lands today's image on every desktop.
+# So converge the whole store in one pass: for each display, take the entry of
+# ours the agent stamped most recently — apply_tag's write is always the
+# newest — and copy it over every entry on that display that differs, Spaces
+# and the display's own entry alike. That converts a desktop showing something
+# foreign, repoints a dated or pre-rename path at the fixed paths, corrects a
+# Space carrying the wrong panel for its display, and gives new Spaces an ours
+# entry to inherit. The agent reload that follows lands it all on screen.
 #
-# Copy, never invent: display entries are written by the agent itself through
-# apply_tag, so grafting them onto Spaces reuses blobs the agent has already
-# accepted. Anything unrecognized — an unreadable store, a foreign display, a
-# reshaped format — is left alone, and the cost of that caution is only that
-# those desktops keep their old wallpaper. Sets STABLE_CHANGED when the store
-# moved and a reload is owed.
+# The source entry can as easily be a Space as the display's own entry: macOS
+# stamps a wallpaper set by hand onto the display entry itself, so right after
+# an install the freshest ours entry on a display is usually the Space
+# apply_tag just set, not the display.
+#
+# Copy, never invent: every entry written here is a byte copy of one the agent
+# already accepted. Anything unrecognized — an unreadable store, a reshaped
+# format — is left alone, and the cost of that caution is only that those
+# desktops keep their old wallpaper. Sets STABLE_CHANGED when the store moved
+# and a reload is owed, and CONVERGE_PENDING when a display had foreign entries
+# but nothing of ours to copy yet — the agent records what apply_tag set only a
+# few seconds after the fact, so pending resolves by waiting and trying again.
 converge_store() {
   local out
+
+  CONVERGE_PENDING=0
 
   out=$(osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
 function run(argv) {
@@ -153,30 +165,35 @@ function run(argv) {
     return path !== null && dirs.some(function (d) { return path.startsWith(d); });
   }
 
-  let changed = false;
+  function lastSet(desktop) {
+    const stamp = desktop.objectForKey("LastSet");
+    return stamp.isNil() ? 0 : stamp.timeIntervalSince1970;
+  }
 
-  // True when the desktop is ours. Ours under a dated or pre-rename path is
-  // repointed at the fixed path for its panel on the way through.
+  let changed = false;
+  let pending = false;
+
+  // Ours under a dated or pre-rename path is repointed at the fixed path for
+  // its panel, so a stale entry can serve as a source like any other.
   function normalize(desktop) {
     const path = imagePath(desktop);
-    if (!ours(path)) return false;
+    if (!ours(path)) return;
     const slot = slotOf(path);
-    if (path === stablePath(slot)) return true;
+    if (path === stablePath(slot)) return;
     const choice = choiceOf(desktop);
     const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
       choice.objectForKey("Configuration"), 2, Ref(), Ref());
-    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return true;
+    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return;
     const url = inner.objectForKey("url");
-    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return true;
+    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return;
     url.setObjectForKey(
       ObjC.unwrap($.NSURL.fileURLWithPath(stablePath(slot)).absoluteString), "relative");
     // 200 = binary plist, the format the agent writes itself.
     const rewritten = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
       inner, 200, 0, Ref());
-    if (rewritten.isNil()) return true;
+    if (rewritten.isNil()) return;
     choice.setObjectForKey(rewritten, "Configuration");
     changed = true;
-    return true;
   }
 
   // Deep, independent copy, via the same serializer that writes the file.
@@ -191,65 +208,87 @@ function run(argv) {
 
   const displays = store.objectForKey("Displays");
   if (displays.isNil() || !displays.isKindOfClass($.NSDictionary)) return "";
-
-  // Displays belong to apply_tag, which knows which panel goes where; a display
-  // that is not ours yet is skipped, and its Spaces wait for the next pass.
-  const canonical = {};
-  displays.allKeys.js.forEach(function (key) {
-    const entry = displays.objectForKey(key);
-    if (!entry.isKindOfClass($.NSDictionary)) return;
-    const desktop = entry.objectForKey("Desktop");
-    if (!desktop.isNil() && normalize(desktop)) canonical[ObjC.unwrap(key)] = desktop;
-  });
-
   const spaces = store.objectForKey("Spaces");
+
+  // Everything on one display converges to one entry, so gather each display's
+  // holders first: its own entry, plus each of its Spaces' per-display entry
+  // and Default twin.
+  const byDisplay = {};
+  function holdersFor(key) {
+    return byDisplay[key] || (byDisplay[key] = []);
+  }
+  displays.allKeys.js.forEach(function (dkey) {
+    const entry = displays.objectForKey(dkey);
+    if (entry.isKindOfClass($.NSDictionary)) holdersFor(ObjC.unwrap(dkey)).push(entry);
+  });
   if (!spaces.isNil() && spaces.isKindOfClass($.NSDictionary)) {
     spaces.allKeys.js.forEach(function (skey) {
       const space = spaces.objectForKey(skey);
       if (!space.isKindOfClass($.NSDictionary)) return;
-      let source = null;
-
       const perDisplay = space.objectForKey("Displays");
-      if (!perDisplay.isNil() && perDisplay.isKindOfClass($.NSDictionary)) {
-        perDisplay.allKeys.js.forEach(function (dkey) {
-          const holder = perDisplay.objectForKey(dkey);
-          if (!holder.isKindOfClass($.NSDictionary)) return;
-          const model = canonical[ObjC.unwrap(dkey)];
-          if (model === undefined) return;
-          source = model;
-          const desktop = holder.objectForKey("Desktop");
-          if (!desktop.isNil() && normalize(desktop)) return;
-          const copy = duplicate(model);
-          if (copy === null) return;
-          holder.setObjectForKey(copy, "Desktop");
-          changed = true;
-        });
-      }
-
-      // Each Space carries a Default twin of its per-display entry.
+      if (perDisplay.isNil() || !perDisplay.isKindOfClass($.NSDictionary)) return;
       const def = space.objectForKey("Default");
-      if (source !== null && !def.isNil() && def.isKindOfClass($.NSDictionary)) {
-        const desktop = def.objectForKey("Desktop");
-        if (desktop.isNil() || !normalize(desktop)) {
-          const copy = duplicate(source);
-          if (copy !== null) {
-            def.setObjectForKey(copy, "Desktop");
-            changed = true;
-          }
+      perDisplay.allKeys.js.forEach(function (dkey) {
+        const holder = perDisplay.objectForKey(dkey);
+        if (!holder.isKindOfClass($.NSDictionary)) return;
+        holdersFor(ObjC.unwrap(dkey)).push(holder);
+        if (!def.isNil() && def.isKindOfClass($.NSDictionary)) {
+          holdersFor(ObjC.unwrap(dkey)).push(def);
         }
-      }
+      });
     });
   }
 
-  if (!changed) return "";
-  const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
-    store, 200, 0, Ref());
-  if (outData.isNil()) return "";
-  return outData.writeToFileAtomically(storePath, true) ? "changed" : "";
+  Object.keys(byDisplay).forEach(function (dkey) {
+    const holders = byDisplay[dkey];
+
+    // The freshest ours entry on the display is the model everything else
+    // copies. Newest wins because apply_tag's write is always the newest —
+    // right after an install that is the Space it just set, since a wallpaper
+    // the user set by hand lands on the display's own entry.
+    let model = null;
+    let modelStamp = -1;
+    let foreign = false;
+    holders.forEach(function (holder) {
+      const desktop = holder.objectForKey("Desktop");
+      if (desktop.isNil() || !desktop.isKindOfClass($.NSDictionary)) return;
+      if (!ours(imagePath(desktop))) {
+        foreign = true;
+        return;
+      }
+      if (lastSet(desktop) > modelStamp) {
+        modelStamp = lastSet(desktop);
+        model = desktop;
+      }
+    });
+    if (model === null) {
+      if (foreign) pending = true;
+      return;
+    }
+    normalize(model);
+    const modelPath = imagePath(model);
+
+    holders.forEach(function (holder) {
+      const desktop = holder.objectForKey("Desktop");
+      if (!desktop.isNil() && imagePath(desktop) === modelPath) return;
+      const copy = duplicate(model);
+      if (copy === null) return;
+      holder.setObjectForKey(copy, "Desktop");
+      changed = true;
+    });
+  });
+
+  if (changed) {
+    const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+      store, 200, 0, Ref());
+    if (outData.isNil() || !outData.writeToFileAtomically(storePath, true)) changed = false;
+  }
+  return (changed ? "changed " : "") + (pending ? "pending" : "");
 }
 EOF
 )
-  [[ "$out" == changed ]] && STABLE_CHANGED=1
+  [[ "$out" == *changed* ]] && STABLE_CHANGED=1
+  [[ "$out" == *pending* ]] && CONVERGE_PENDING=1
   return 0
 }
 
@@ -572,6 +611,7 @@ refresh() {
   local out
   local tmp
   local tag_tmp
+  local try
 
   # Resolve today's release tag from the /latest redirect (no API, no token).
   tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$REPO/releases/latest") || return 0
@@ -616,13 +656,16 @@ refresh() {
   # make the agent reload. Order matters twice over: the new images must be in
   # place before anything points at them, and the converge must read the store
   # only after the agent has saved what apply_tag just set — it does so a few
-  # seconds after a change, and a Space converges only by copying a display
-  # entry that is already ours. A display entry the agent has not saved yet
-  # leaves its Spaces unconverged, and the next scheduled run picks them up.
+  # seconds after a change, and converging a display needs an ours entry on it
+  # to copy. Pending means that save has not landed yet, so wait and try again
+  # rather than reloading a store that still has desktops to catch.
   publish_stable "$tag" || return 1
   apply_tag "$tag" || return 1
-  sleep 5
-  converge_store
+  for try in 1 2 3 4 5; do
+    sleep 5
+    converge_store
+    (( CONVERGE_PENDING )) || break
+  done
   (( STABLE_CHANGED )) && reload_all_spaces
   prune_cache
 }
