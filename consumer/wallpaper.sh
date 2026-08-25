@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Daily wallpaper subscriber for macOS. The default action downloads the latest
+# Wallpaper Journey subscriber for macOS. The default action downloads the latest
 # triptych and applies it. --apply only reapplies the newest cached triptych, so
 # the display watcher never needs network access. --check uninstalls everything
 # if the user has set their own wallpaper, and --uninstall does so on demand.
@@ -7,7 +7,11 @@
 set -u
 
 REPO="https://github.com/ianmatson/wallpaper-journey"
-DIR="$HOME/DailyWall"   # where images are saved — change this and both plist paths together
+DIR="$HOME/WallpaperJourney"   # where images are saved — change this and both plist paths together
+# Installs predating the rename kept their images here. The folder is left
+# behind as a symlink so Spaces still pointing inside it keep rendering, which
+# also means a path under it is ours, not a wallpaper the user chose.
+LEGACY_DIR="$HOME/DailyWall"
 KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"
 APPLIED_MARKER="$DIR/.applied"
@@ -134,18 +138,19 @@ function run(argv) {
   });
 }
 EOF
-  # The marker records that this machine has shown a DailyWall wallpaper, so
-  # a pre-install desktop never reads as the user opting back out.
+  # The marker records that this machine has shown a Wallpaper Journey
+  # wallpaper, so a pre-install desktop never reads as the user opting back out.
   [[ $? -eq 0 ]] && : > "$APPLIED_MARKER"
 }
 
-# Prints "ours" when every screen's wallpaper lives in $DIR, "theirs" when any
-# screen shows something else, nothing when the answer is unknowable.
+# Prints "ours" when every screen's wallpaper lives in $DIR or the folder used
+# before the rename, "theirs" when any screen shows something else, and nothing
+# when the answer is unknowable.
 wallpaper_state() {
-  osascript -l JavaScript - "$DIR" 2>/dev/null <<'EOF'
+  osascript -l JavaScript - "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
 function run(argv) {
   ObjC.import("AppKit");
-  const dir = argv[0].replace(/\/*$/, "/");
+  const dirs = argv.map(function (d) { return d.replace(/\/*$/, "/"); });
   const ws = $.NSWorkspace.sharedWorkspace;
   const screens = $.NSScreen.screens.js;
   if (screens.length === 0) return "";
@@ -156,7 +161,8 @@ function run(argv) {
     if (url.isNil()) return "";
     const path = ObjC.unwrap(url.path);
     if (!path) return "";
-    if (!path.startsWith(dir)) return "theirs";
+    const ours = dirs.some(function (d) { return path.startsWith(d); });
+    if (!ours) return "theirs";
   }
   return "ours";
 }
@@ -185,7 +191,8 @@ uninstall() {
     launchctl bootout "$domain/$job" 2>/dev/null || true
   done
 
-  # Delete only files DailyWall created, in case DIR points at a shared folder.
+  # Delete only files Wallpaper Journey created, in case DIR points at a shared
+  # folder.
   rm -f -- \
     "$LAUNCH_AGENTS/$DAILY_JOB.plist" \
     "$LAUNCH_AGENTS/$WATCHER_JOB.plist" \
@@ -193,19 +200,22 @@ uninstall() {
     "$DIR"/wall-*(N) "$STABLE_PREFIX"-*.jpg(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
     "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
   rmdir -- "$DIR" 2>/dev/null || true
+  # The compatibility symlink left by the rename, but never a real folder that
+  # happens to sit there.
+  [[ -L "$LEGACY_DIR" ]] && rm -f -- "$LEGACY_DIR"
 
   launchctl bootout "$domain/$last" 2>/dev/null || true
 }
 
 self_destruct() {
-  osascript -e 'display notification "You set your own wallpaper, so DailyWall uninstalled itself and removed its files." with title "DailyWall"' 2>/dev/null || true
+  osascript -e 'display notification "You set your own wallpaper, so Wallpaper Journey uninstalled itself and removed its files." with title "Wallpaper Journey"' 2>/dev/null || true
   uninstall "$1"
 }
 
 # Paths under $DIR that the wallpaper agent still points a Space at. Read only;
 # an unreadable or reshaped store just yields nothing and pruning carries on.
 referenced_images() {
-  osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" 2>/dev/null <<'EOF'
+  osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" 2>/dev/null <<'EOF'
 function run(argv) {
   ObjC.import("Foundation");
   const data = $.NSData.dataWithContentsOfFile(argv[0]);
@@ -213,7 +223,7 @@ function run(argv) {
   const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
     data, 0, Ref(), Ref());
   if (store.isNil()) return "";
-  const dir = argv[1].replace(/\/*$/, "/");
+  const dirs = argv.slice(1).map(function (d) { return d.replace(/\/*$/, "/"); });
   const found = {};
 
   // Image choices sit in nested binary plists, so walk the whole store and
@@ -233,7 +243,7 @@ function run(argv) {
       const relative = ObjC.unwrap(url.objectForKey("relative"));
       if (!relative) return;
       const path = ObjC.unwrap($.NSURL.URLWithString(relative).path);
-      if (path && path.startsWith(dir)) found[path] = true;
+      if (path && dirs.some(function (d) { return path.startsWith(d); })) found[path] = true;
     }
   }
   walk(store);
@@ -344,7 +354,7 @@ case "${1:-refresh}" in
     fi
     ;;
   uninstall|--uninstall)
-    print -r -- "Removing DailyWall's launch agents, scripts, images, and logs."
+    print -r -- "Removing Wallpaper Journey's launch agents, scripts, images, and logs."
     uninstall "$WATCHER_JOB"
     ;;
   *)

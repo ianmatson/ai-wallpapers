@@ -7,7 +7,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>__HOME__/DailyWall/wallpaper.sh</string>
+    <string>__HOME__/WallpaperJourney/wallpaper.sh</string>
   </array>
   <!-- Polled rather than run once, so a release published after 03:00 still
        reaches subscribers the same day. A poll with nothing new exits after a

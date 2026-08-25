@@ -33,21 +33,21 @@ for the command contract.
 curl -fsSL https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer/install-macos.sh | zsh
 ```
 
-That installs or updates DailyWall without admin rights, downloads today's
-triptych, and watches for monitor changes. If you prefer to inspect each step,
-the equivalent manual installation is:
+That installs or updates Wallpaper Journey without admin rights, downloads
+today's triptych, and watches for monitor changes. If you prefer to inspect each
+step, the equivalent manual installation is:
 
 <details>
 <summary>Manual installation</summary>
 
 ```sh
 BASE=https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer
-mkdir -p ~/DailyWall
-curl -fsSL -o ~/DailyWall/wallpaper.sh "$BASE/wallpaper.sh"
-curl -fsSL -o ~/DailyWall/wallpaper-watcher.js "$BASE/wallpaper-watcher.js"
+mkdir -p ~/WallpaperJourney
+curl -fsSL -o ~/WallpaperJourney/wallpaper.sh "$BASE/wallpaper.sh"
+curl -fsSL -o ~/WallpaperJourney/wallpaper-watcher.js "$BASE/wallpaper-watcher.js"
 curl -fsSL -o ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist "$BASE/com.ianmatson.wallpaper.plist"
 curl -fsSL -o ~/Library/LaunchAgents/com.ianmatson.wallpaper-watcher.plist "$BASE/com.ianmatson.wallpaper-watcher.plist"
-chmod +x ~/DailyWall/wallpaper.sh ~/DailyWall/wallpaper-watcher.js
+chmod +x ~/WallpaperJourney/wallpaper.sh ~/WallpaperJourney/wallpaper-watcher.js
 
 sed -i '' "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist
 sed -i '' "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/com.ianmatson.wallpaper-watcher.plist
@@ -73,10 +73,9 @@ Settings → Displays:
 No permission prompts. Every desktop (Space) on every monitor is updated by the
 morning run, not just the one you happen to be looking at. Adding, removing, or
 rearranging a monitor reapplies the cached images automatically without another
-download. Polling several times a
-day means a release published late — or one that failed and was retried — still
-reaches you the same day. To download and set today's wallpaper immediately
-instead of waiting for the next poll:
+download. Polling several times a day means a release published late — or one
+that failed and was retried — still reaches you the same day. To download and
+set today's wallpaper immediately instead of waiting for the next poll:
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
@@ -85,17 +84,18 @@ launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
 ### Uninstall — macOS
 
 You usually never need to: **just set your own wallpaper** in System Settings.
-DailyWall notices within a few seconds, uninstalls itself completely (launch
-agents, scripts, cached images, and logs), and posts a notification saying so.
+Wallpaper Journey notices within a few seconds, uninstalls itself completely
+(launch agents, scripts, cached images, and logs), and posts a notification
+saying so.
 
 To uninstall by hand instead:
 
 ```sh
-zsh ~/DailyWall/wallpaper.sh --uninstall
+zsh ~/WallpaperJourney/wallpaper.sh --uninstall
 ```
 
 Both paths remove everything the installer created: the two launch agents and
-their plists, `~/DailyWall`, and the logs in `/tmp`.
+their plists, `~/WallpaperJourney`, and the logs in `/tmp`.
 
 ## Subscribe — iPhone and iPad
 
@@ -112,7 +112,7 @@ In PowerShell (no admin needed):
 
 ```powershell
 $Base = "https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer"
-$Dir  = "$env:USERPROFILE\DailyWall"
+$Dir  = "$env:USERPROFILE\WallpaperJourney"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 iwr "$Base/wallpaper.ps1" -OutFile "$Dir\wallpaper.ps1"
 iwr "$Base/install.ps1"   -OutFile "$Dir\install.ps1"
@@ -121,7 +121,7 @@ iwr "$Base/install.ps1"   -OutFile "$Dir\install.ps1"
 powershell -ExecutionPolicy Bypass -File "$Dir\install.ps1"
 ```
 
-Creates a `DailyWallpaper` scheduled task that checks for a new release at
+Creates a `WallpaperJourney` scheduled task that checks for a new release at
 04:00, 08:00, 12:00, 16:00, and 20:00 (and at logon), and sets the wallpaper
 once straight away. Windows gets a single image on all monitors
 (`landscape-middle.jpg` by default).
@@ -129,11 +129,11 @@ once straight away. Windows gets a single image on all monitors
 ### Uninstall — Windows
 
 As on macOS, **just set your own wallpaper** — the next poll notices, uninstalls
-the task, removes DailyWall's files, and shows a notification. To uninstall by
-hand instead:
+the task, removes Wallpaper Journey's files, and shows a notification. To
+uninstall by hand instead:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\DailyWall\wallpaper.ps1" -Uninstall
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\WallpaperJourney\wallpaper.ps1" -Uninstall
 ```
 
 ## Customising
@@ -141,13 +141,13 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\DailyWall\wallpaper.p
 Settings live at the top of the script you downloaded — `wallpaper.sh` on
 macOS, `wallpaper.ps1` on Windows.
 
-**Where images are saved.** Default is `~/DailyWall`:
+**Where images are saved.** Default is `~/WallpaperJourney`:
 
 ```sh
-DIR="$HOME/DailyWall"        # macOS
+DIR="$HOME/WallpaperJourney"        # macOS
 ```
 ```powershell
-$Dir = "$env:USERPROFILE\DailyWall"   # Windows
+$Dir = "$env:USERPROFILE\WallpaperJourney"   # Windows
 ```
 
 On macOS the scripts and images live in the same folder, so if you move `DIR`
@@ -176,14 +176,20 @@ images automatically from your monitor layout.
 - The macOS display watcher only reads cached files; monitor changes never make
   network requests.
 - Setting your own wallpaper on **any** screen counts as opting out on macOS —
-  DailyWall uninstalls itself entirely rather than fight you for the other
-  screens at the next poll.
+  Wallpaper Journey uninstalls itself entirely rather than fight you for the
+  other screens at the next poll.
+- This was called DailyWall until August 2026. Rerunning the macOS installer
+  renames `~/DailyWall` to `~/WallpaperJourney` and leaves a symlink behind,
+  because each Space records an absolute path to its wallpaper; without it every
+  desktop set up before the rename would go blank. Uninstalling removes the
+  symlink. On Windows the old `DailyWallpaper` scheduled task is unregistered
+  when you rerun `install.ps1`.
 - macOS notices an opt-out within seconds, because the watcher listens for the
   system's background-changed notification. Windows has no equivalent resident
   process, so it notices at the next scheduled poll — up to four hours later.
-- The opt-out detection compares the current wallpaper path against DailyWall's
-  own file: `~/DailyWall` on macOS, `current.jpg` on Windows. If you keep old
-  macOS Spaces that still show a pre-DailyWall wallpaper, visiting one can read
+- The opt-out detection compares the current wallpaper path against Wallpaper Journey's
+  own file: `~/WallpaperJourney` on macOS, `current.jpg` on Windows. If you keep old
+  macOS Spaces that still show a wallpaper from before you subscribed, visiting one can read
   as opting out.
 - On macOS every Space stores its wallpaper as a file path, and the only public
   API to set one reaches the Space on screen. So the wallpaper is always the

@@ -1,6 +1,6 @@
 # Daily wallpaper subscriber for Windows. Edit $File, then schedule with
 # install.ps1. The default run polls for a new release and applies it;
-# -Uninstall removes the scheduled task and every file DailyWall created.
+# -Uninstall removes the scheduled task and every file it created.
 #
 # The task polls several times a day so a release published after the usual
 # window still arrives the same day. A poll with nothing new costs one redirect
@@ -10,8 +10,9 @@ param([switch]$Uninstall)
 
 $Repo = "https://github.com/ianmatson/wallpaper-journey"
 $File = "landscape-middle.jpg"   # landscape-left.jpg | landscape-middle.jpg | landscape-right.jpg
-$Dir  = "$env:USERPROFILE\DailyWall"   # where images are saved
-$TaskName = "DailyWallpaper"
+$Dir  = "$env:USERPROFILE\WallpaperJourney"   # where images are saved
+$TaskName = "WallpaperJourney"
+$LegacyTaskName = "DailyWallpaper"   # registered under the old name before the rename
 
 $Out     = Join-Path $Dir "current.jpg"
 $Tmp     = Join-Path $Dir "download.tmp"
@@ -26,7 +27,7 @@ function Get-LatestTag {
     $request = [System.Net.HttpWebRequest]::Create("$Repo/releases/latest")
     $request.Method = "HEAD"
     $request.AllowAutoRedirect = $false
-    $request.UserAgent = "DailyWall"
+    $request.UserAgent = "WallpaperJourney"
     $response = $request.GetResponse()
     $location = $response.Headers["Location"]
     $response.Close()
@@ -71,15 +72,16 @@ function Show-Notice($Text) {
     $notify = New-Object System.Windows.Forms.NotifyIcon
     $notify.Icon = [System.Drawing.SystemIcons]::Information
     $notify.Visible = $true
-    $notify.ShowBalloonTip(10000, "DailyWall", $Text, 'Info')
+    $notify.ShowBalloonTip(10000, "Wallpaper Journey", $Text, 'Info')
     Start-Sleep -Seconds 10
     $notify.Dispose()
   } catch { }
 }
 
 function Invoke-Uninstall {
-  # Delete only files DailyWall created, in case $Dir is a shared folder, and
-  # do it before unregistering: removing the task can terminate this process.
+  # Delete only files Wallpaper Journey created, in case $Dir is a shared
+  # folder, and do it before unregistering: removing the task can terminate
+  # this process.
   foreach ($path in @($Out, $Tmp, $TagFile, $Marker,
                       (Join-Path $Dir "install.ps1"),
                       (Join-Path $Dir "wallpaper.ps1"))) {
@@ -91,11 +93,13 @@ function Invoke-Uninstall {
     }
   } catch { }
 
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  foreach ($name in @($LegacyTaskName, $TaskName)) {
+    Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+  }
 }
 
 if ($Uninstall) {
-  Write-Host "Removing DailyWall's scheduled task, script, images, and state."
+  Write-Host "Removing Wallpaper Journey's scheduled task, script, images, and state."
   Invoke-Uninstall
   exit 0
 }
@@ -103,7 +107,7 @@ if ($Uninstall) {
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 
 if (Test-ManualChange) {
-  Show-Notice "You set your own wallpaper, so DailyWall uninstalled itself and removed its files."
+  Show-Notice "You set your own wallpaper, so Wallpaper Journey uninstalled itself and removed its files."
   Invoke-Uninstall
   exit 0
 }

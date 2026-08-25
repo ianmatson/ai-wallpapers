@@ -1,7 +1,7 @@
 # Registers wallpaper.ps1 to poll for new releases through the day. Run once,
 # no admin rights needed.
 
-$Script = Join-Path "$env:USERPROFILE\DailyWall" "wallpaper.ps1"
+$Script = Join-Path "$env:USERPROFILE\WallpaperJourney" "wallpaper.ps1"
 if (-not (Test-Path $Script)) { throw "Put wallpaper.ps1 at $Script first." }
 
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
@@ -19,7 +19,11 @@ $Triggers += New-ScheduledTaskTrigger -AtLogOn
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries -StartWhenAvailable
 
-Register-ScheduledTask -TaskName "DailyWallpaper" -Action $Action -Trigger $Triggers `
+# Drop the task registered under the old name, or upgrades would leave two
+# copies polling.
+Unregister-ScheduledTask -TaskName "DailyWallpaper" -Confirm:$false -ErrorAction SilentlyContinue
+
+Register-ScheduledTask -TaskName "WallpaperJourney" -Action $Action -Trigger $Triggers `
   -Settings $Settings -Description "Downloads and sets the daily AI wallpaper." -Force
 
-Start-ScheduledTask -TaskName "DailyWallpaper"
+Start-ScheduledTask -TaskName "WallpaperJourney"

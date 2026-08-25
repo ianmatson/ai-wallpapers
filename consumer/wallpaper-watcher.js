@@ -62,7 +62,7 @@ function scheduleVisitPair(delay, followUpDelay) {
 }
 
 ObjC.registerSubclass({
-  name: "DailyWallpaperDisplayWatcher",
+  name: "WallpaperJourneyDisplayWatcher",
   protocols: ["NSApplicationDelegate"],
   methods: {
     "applicationDidChangeScreenParameters:": {
@@ -122,7 +122,7 @@ function run(argv) {
 
   wallpaperScript = argv[0];
   const app = $.NSApplication.sharedApplication;
-  delegate = $.DailyWallpaperDisplayWatcher.alloc.init;
+  delegate = $.WallpaperJourneyDisplayWatcher.alloc.init;
   app.delegate = delegate;
   app.setActivationPolicy($.NSApplicationActivationPolicyProhibited);
 
