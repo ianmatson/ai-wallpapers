@@ -44,6 +44,8 @@ if [[ -d "$LEGACY_DIR" && ! -L "$LEGACY_DIR" && ! -e "$HOME_DIR" ]]; then
 fi
 
 mkdir -p "$HOME_DIR"
+# launchd redirects the jobs' output here but does not create the directory.
+mkdir -p "$HOME/Library/Logs/WallpaperJourney"
 
 install -m 755 "$install_tmp/wallpaper.sh" "$HOME_DIR/wallpaper.sh"
 install -m 755 "$install_tmp/wallpaper-watcher.js" "$HOME_DIR/wallpaper-watcher.js"

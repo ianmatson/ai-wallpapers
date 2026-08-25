@@ -42,7 +42,7 @@ step, the equivalent manual installation is:
 
 ```sh
 BASE=https://raw.githubusercontent.com/ianmatson/wallpaper-journey/main/consumer
-mkdir -p ~/WallpaperJourney
+mkdir -p ~/WallpaperJourney ~/Library/Logs/WallpaperJourney
 curl -fsSL -o ~/WallpaperJourney/wallpaper.sh "$BASE/wallpaper.sh"
 curl -fsSL -o ~/WallpaperJourney/wallpaper-watcher.js "$BASE/wallpaper-watcher.js"
 curl -fsSL -o ~/Library/LaunchAgents/com.ianmatson.wallpaper.plist "$BASE/com.ianmatson.wallpaper.plist"
@@ -95,7 +95,8 @@ zsh ~/WallpaperJourney/wallpaper.sh --uninstall
 ```
 
 Both paths remove everything the installer created: the two launch agents and
-their plists, `~/WallpaperJourney`, and the logs in `/tmp`.
+their plists, `~/WallpaperJourney`, and the logs in
+`~/Library/Logs/WallpaperJourney`.
 
 ## Subscribe — iPhone and iPad
 

@@ -28,6 +28,7 @@ QUIET_AFTER_RELOAD=30   # seconds to leave the restarting wallpaper agent alone
 # desktop: the paths stay put and only the bytes behind them change.
 STABLE_PREFIX="$DIR/current"
 WALLPAPER_STORE="$HOME/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+LOG_DIR="$HOME/Library/Logs/WallpaperJourney"   # where launchd sends both jobs' output
 STABLE_CHANGED=0
 CONVERGE_PENDING=0
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
@@ -527,11 +528,12 @@ uninstall() {
   rm -f -- \
     "$LAUNCH_AGENTS/$DAILY_JOB.plist" \
     "$LAUNCH_AGENTS/$WATCHER_JOB.plist" \
+    "$LOG_DIR/wallpaper.log" "$LOG_DIR/wallpaper-watcher.log" \
     /tmp/wallpaper.log /tmp/wallpaper-watcher.log \
     "$DIR"/wall-*(N) "$STABLE_PREFIX"-*.jpg(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
     "$RELOAD_MARKER" \
     "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
-  rmdir -- "$DIR" 2>/dev/null || true
+  rmdir -- "$DIR" "$LOG_DIR" 2>/dev/null || true
   # The compatibility symlink left by the rename, but never a real folder that
   # happens to sit there.
   [[ -L "$LEGACY_DIR" ]] && rm -f -- "$LEGACY_DIR"

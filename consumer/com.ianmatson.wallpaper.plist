@@ -39,8 +39,8 @@
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/wallpaper.log</string>
+  <string>__HOME__/Library/Logs/WallpaperJourney/wallpaper.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/wallpaper.log</string>
+  <string>__HOME__/Library/Logs/WallpaperJourney/wallpaper.log</string>
 </dict>
 </plist>
