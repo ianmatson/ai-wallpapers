@@ -11,7 +11,6 @@ const STORE_PATH = ObjC.unwrap($.NSHomeDirectory()) +
 let wallpaperScript = "";
 let delegate = null;
 let applyTimer = null;
-let followUpTimer = null;
 let checkTimer = null;
 let lastStoreStamp = 0;
 
@@ -52,15 +51,6 @@ function scheduleCheck(delay) {
   checkTimer = scheduleOnce(checkTimer, delay, "checkWallpaper:");
 }
 
-// A Space switch reports itself before the switch has finished, so an action
-// sent straight away still lands on the Space being left. Sending a second one
-// after the transition settles is what makes the new Space be handled on
-// arrival instead of only after leaving and coming back.
-function scheduleVisitPair(delay, followUpDelay) {
-  applyTimer = scheduleOnce(applyTimer, delay, "visitSpace:");
-  followUpTimer = scheduleOnce(followUpTimer, followUpDelay, "visitSpace:");
-}
-
 ObjC.registerSubclass({
   name: "WallpaperJourneyDisplayWatcher",
   protocols: ["NSApplicationDelegate"],
@@ -70,15 +60,6 @@ ObjC.registerSubclass({
       implementation: function () {
         // macOS can post several notifications while a display settles.
         scheduleApply(2);
-      },
-    },
-    "activeSpaceChanged:": {
-      types: ["void", ["id"]],
-      implementation: function () {
-        // --visit stops the subscription if this Space carries a wallpaper the
-        // user chose, and otherwise moves a Space set up by an older version
-        // onto the fixed path.
-        scheduleVisitPair(0.6, 2.5);
       },
     },
     "pollStore:": {
@@ -97,12 +78,6 @@ ObjC.registerSubclass({
       implementation: function () {
         applyTimer = null;
         runWallpaperScript("--apply");
-      },
-    },
-    "visitSpace:": {
-      types: ["void", ["id"]],
-      implementation: function () {
-        runWallpaperScript("--visit");
       },
     },
     "checkWallpaper:": {
@@ -125,14 +100,6 @@ function run(argv) {
   delegate = $.WallpaperJourneyDisplayWatcher.alloc.init;
   app.delegate = delegate;
   app.setActivationPolicy($.NSApplicationActivationPolicyProhibited);
-
-  // Handle whichever Space the user switches to.
-  $.NSWorkspace.sharedWorkspace.notificationCenter.addObserverSelectorNameObject(
-    delegate,
-    "activeSpaceChanged:",
-    $.NSWorkspaceActiveSpaceDidChangeNotification,
-    $()
-  );
 
   // Watching the store's timestamp is what makes a manual wallpaper change
   // register within seconds. macOS no longer posts a notification for it, so

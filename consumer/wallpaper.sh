@@ -85,51 +85,172 @@ publish_stable() {
   return 0
 }
 
-# A Space set up before the fixed paths existed still records a dated filename,
-# and one from before the rename records the old folder. Neither catches up on
-# its own unless that desktop happens to be visited, so give those names today's
-# panels and put the folder symlink back when a Space still needs it. The agent
-# reload then reaches every desktop, whichever path it recorded.
+# The store is the wallpaper agent's memory of every desktop, on screen or not.
+# Editing it is the only way to reach a Space that is not visible: the public
+# API stops at the active Space of each display, and Apple ships nothing else.
+# So converge the whole store in one pass: any Space showing something that is
+# not ours takes a copy of its display's entry, and any Space still pointing at
+# a dated filename or the pre-rename folder is repointed at the fixed paths.
+# The agent reload that follows then lands today's image on every desktop.
 #
-# A dated name a Space still points at stops being an archive entry and becomes
-# another window onto today's image. Days nothing points at stay as they were.
-converge_stale_paths() {
-  local -a referenced
-  local path
-  local base
-  local target
-  local tmp
+# Copy, never invent: display entries are written by the agent itself through
+# apply_tag, so grafting them onto Spaces reuses blobs the agent has already
+# accepted. Anything unrecognized — an unreadable store, a foreign display, a
+# reshaped format — is left alone, and the cost of that caution is only that
+# those desktops keep their old wallpaper. Sets STABLE_CHANGED when the store
+# moved and a reload is owed.
+converge_store() {
+  local out
 
-  referenced=(${(f)"$(referenced_images)"})
-  (( ${#referenced} )) || return 0
+  out=$(osascript -l JavaScript - "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
+function run(argv) {
+  ObjC.import("Foundation");
+  const storePath = argv[0];
+  const dirs = [argv[1], argv[2]].map(function (d) { return d.replace(/\/*$/, "/"); });
+  const stablePrefix = argv[3];
 
-  if [[ ! -e "$LEGACY_DIR" && "${referenced[*]}" == *"$LEGACY_DIR/"* ]]; then
-    ln -s -- "$DIR" "$LEGACY_DIR" 2>/dev/null || true
-  fi
+  function stablePath(slot) { return stablePrefix + "-" + slot + ".jpg"; }
+  function slotOf(path) {
+    if (/-left\.jpg$/.test(path)) return "left";
+    if (/-right\.jpg$/.test(path)) return "right";
+    return "middle";
+  }
 
-  for path in $referenced; do
-    base="${path:t}"
-    # The fixed paths already hold today's image.
-    [[ "$base" == wall-*.jpg ]] || continue
+  const data = $.NSData.dataWithContentsOfFile(storePath);
+  if (data.isNil()) return "";
+  // 2 = mutable containers and leaves, so entries can be edited in place.
+  const store = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+    data, 2, Ref(), Ref());
+  if (store.isNil() || !store.isKindOfClass($.NSDictionary)) return "";
 
-    target="$STABLE_PREFIX-middle.jpg"
-    case "$base" in
-      *-landscape-left.jpg)  target="$STABLE_PREFIX-left.jpg" ;;
-      *-landscape-right.jpg) target="$STABLE_PREFIX-right.jpg" ;;
-    esac
-    [[ -s "$target" ]] || continue
+  function choiceOf(desktop) {
+    if (desktop.isNil() || !desktop.isKindOfClass($.NSDictionary)) return null;
+    const content = desktop.objectForKey("Content");
+    if (content.isNil() || !content.isKindOfClass($.NSDictionary)) return null;
+    const choices = content.objectForKey("Choices");
+    if (choices.isNil() || !choices.isKindOfClass($.NSArray) || choices.count === 0) return null;
+    const choice = choices.objectAtIndex(0);
+    return choice.isKindOfClass($.NSDictionary) ? choice : null;
+  }
 
-    # Always work in the real folder; a legacy path resolves to the same file
-    # through the symlink.
-    path="$DIR/$base"
-    [[ "$target" -ef "$path" ]] && continue
+  function imagePath(desktop) {
+    const choice = choiceOf(desktop);
+    if (choice === null) return null;
+    if (ObjC.unwrap(choice.objectForKey("Provider")) !== "com.apple.wallpaper.choice.image") return null;
+    const cfg = choice.objectForKey("Configuration");
+    if (cfg.isNil() || !cfg.isKindOfClass($.NSData)) return null;
+    const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      cfg, 0, Ref(), Ref());
+    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return null;
+    const url = inner.objectForKey("url");
+    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return null;
+    const relative = ObjC.unwrap(url.objectForKey("relative"));
+    if (!relative) return null;
+    return ObjC.unwrap($.NSURL.URLWithString(relative).path);
+  }
 
-    tmp="$path.new.$$"
-    ln -f -- "$target" "$tmp" 2>/dev/null || cp -f -- "$target" "$tmp" \
-      || { rm -f -- "$tmp"; continue; }
-    mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; continue; }
-    STABLE_CHANGED=1
-  done
+  function ours(path) {
+    return path !== null && dirs.some(function (d) { return path.startsWith(d); });
+  }
+
+  let changed = false;
+
+  // True when the desktop is ours. Ours under a dated or pre-rename path is
+  // repointed at the fixed path for its panel on the way through.
+  function normalize(desktop) {
+    const path = imagePath(desktop);
+    if (!ours(path)) return false;
+    const slot = slotOf(path);
+    if (path === stablePath(slot)) return true;
+    const choice = choiceOf(desktop);
+    const inner = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      choice.objectForKey("Configuration"), 2, Ref(), Ref());
+    if (inner.isNil() || !inner.isKindOfClass($.NSDictionary)) return true;
+    const url = inner.objectForKey("url");
+    if (url.isNil() || !url.isKindOfClass($.NSDictionary)) return true;
+    url.setObjectForKey(
+      ObjC.unwrap($.NSURL.fileURLWithPath(stablePath(slot)).absoluteString), "relative");
+    // 200 = binary plist, the format the agent writes itself.
+    const rewritten = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+      inner, 200, 0, Ref());
+    if (rewritten.isNil()) return true;
+    choice.setObjectForKey(rewritten, "Configuration");
+    changed = true;
+    return true;
+  }
+
+  // Deep, independent copy, via the same serializer that writes the file.
+  function duplicate(desktop) {
+    const blob = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+      desktop, 200, 0, Ref());
+    if (blob.isNil()) return null;
+    const copy = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+      blob, 2, Ref(), Ref());
+    return copy.isNil() ? null : copy;
+  }
+
+  const displays = store.objectForKey("Displays");
+  if (displays.isNil() || !displays.isKindOfClass($.NSDictionary)) return "";
+
+  // Displays belong to apply_tag, which knows which panel goes where; a display
+  // that is not ours yet is skipped, and its Spaces wait for the next pass.
+  const canonical = {};
+  displays.allKeys.js.forEach(function (key) {
+    const entry = displays.objectForKey(key);
+    if (!entry.isKindOfClass($.NSDictionary)) return;
+    const desktop = entry.objectForKey("Desktop");
+    if (!desktop.isNil() && normalize(desktop)) canonical[ObjC.unwrap(key)] = desktop;
+  });
+
+  const spaces = store.objectForKey("Spaces");
+  if (!spaces.isNil() && spaces.isKindOfClass($.NSDictionary)) {
+    spaces.allKeys.js.forEach(function (skey) {
+      const space = spaces.objectForKey(skey);
+      if (!space.isKindOfClass($.NSDictionary)) return;
+      let source = null;
+
+      const perDisplay = space.objectForKey("Displays");
+      if (!perDisplay.isNil() && perDisplay.isKindOfClass($.NSDictionary)) {
+        perDisplay.allKeys.js.forEach(function (dkey) {
+          const holder = perDisplay.objectForKey(dkey);
+          if (!holder.isKindOfClass($.NSDictionary)) return;
+          const model = canonical[ObjC.unwrap(dkey)];
+          if (model === undefined) return;
+          source = model;
+          const desktop = holder.objectForKey("Desktop");
+          if (!desktop.isNil() && normalize(desktop)) return;
+          const copy = duplicate(model);
+          if (copy === null) return;
+          holder.setObjectForKey(copy, "Desktop");
+          changed = true;
+        });
+      }
+
+      // Each Space carries a Default twin of its per-display entry.
+      const def = space.objectForKey("Default");
+      if (source !== null && !def.isNil() && def.isKindOfClass($.NSDictionary)) {
+        const desktop = def.objectForKey("Desktop");
+        if (desktop.isNil() || !normalize(desktop)) {
+          const copy = duplicate(source);
+          if (copy !== null) {
+            def.setObjectForKey(copy, "Desktop");
+            changed = true;
+          }
+        }
+      }
+    });
+  }
+
+  if (!changed) return "";
+  const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+    store, 200, 0, Ref());
+  if (outData.isNil()) return "";
+  return outData.writeToFileAtomically(storePath, true) ? "changed" : "";
+}
+EOF
+)
+  [[ "$out" == changed ]] && STABLE_CHANGED=1
+  return 0
 }
 
 # Restarting the wallpaper agent makes it reload every Space from disk. Because
@@ -460,7 +581,7 @@ refresh() {
   # A desktop can be behind even when the release has not moved, so catch those
   # up before the early exit below rather than after it.
   if [[ -s "$STABLE_PREFIX-middle.jpg" ]]; then
-    converge_stale_paths
+    converge_store
     (( STABLE_CHANGED )) && reload_all_spaces
   fi
 
@@ -490,18 +611,19 @@ refresh() {
   print -r -- "$tag" > "$tag_tmp"
   mv "$tag_tmp" "$CURRENT_TAG_FILE"
 
-  # Swap the bytes behind the fixed paths first, then set the visible desktop,
-  # then make every other Space reload. Order matters: the agent must restart
-  # after the new images are in place.
+  # Swap the bytes behind the fixed paths first, then set the visible desktops,
+  # then converge the store so every other Space points at those paths too, then
+  # make the agent reload. Order matters twice over: the new images must be in
+  # place before anything points at them, and the converge must read the store
+  # only after the agent has saved what apply_tag just set — it does so a few
+  # seconds after a change, and a Space converges only by copying a display
+  # entry that is already ours. A display entry the agent has not saved yet
+  # leaves its Spaces unconverged, and the next scheduled run picks them up.
   publish_stable "$tag" || return 1
-  converge_stale_paths
   apply_tag "$tag" || return 1
-  if (( STABLE_CHANGED )); then
-    # The agent saves its store a few seconds after a wallpaper changes, and a
-    # restart before that lands throws the change away. Wait, then reload.
-    sleep 5
-    reload_all_spaces
-  fi
+  sleep 5
+  converge_store
+  (( STABLE_CHANGED )) && reload_all_spaces
   prune_cache
 }
 
@@ -521,23 +643,12 @@ case "${1:-refresh}" in
       self_destruct "$WATCHER_JOB"
     fi
     ;;
-  visit|--visit)
-    # Arriving on a Space. Checking before applying matters: a Space carrying a
-    # wallpaper the user chose has to end the subscription, not be overwritten
-    # by it. A Space this subscription has never reached is the opposite case,
-    # and taking it over here is the only way it ever gets today's image.
-    case "$(subscription_state)" in
-      optout) self_destruct "$WATCHER_JOB" ;;
-      ok) tag=$(cached_tag) || exit 0
-          apply_tag "$tag" ;;
-    esac
-    ;;
   uninstall|--uninstall)
     print -r -- "Removing Wallpaper Journey's launch agents, scripts, images, and logs."
     uninstall "$WATCHER_JOB"
     ;;
   *)
-    print -u2 -- "usage: $0 [--refresh|--apply|--visit|--check|--uninstall]"
+    print -u2 -- "usage: $0 [--refresh|--apply|--check|--uninstall]"
     exit 2
     ;;
 esac
