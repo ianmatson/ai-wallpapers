@@ -73,9 +73,11 @@ Settings → Displays:
 No permission prompts. Every desktop (Space) on every monitor takes today's
 image within seconds of installing, and the morning run updates them all,
 whether or not you are looking at them. Adding, removing, or rearranging a
-monitor reapplies the cached images automatically without another download. Polling several times a day means a release published late — or one
-that failed and was retried — still reaches you the same day. To download and
-set today's wallpaper immediately instead of waiting for the next poll:
+monitor reapplies the cached images automatically. Waking the Mac or changing
+Spaces uses the same local apply path. These system events do not download the
+images again. Polling several times a day means a release published late — or
+one that failed and was retried — still reaches you the same day. To download
+and set today's wallpaper immediately instead of waiting for the next poll:
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/com.ianmatson.wallpaper
@@ -187,8 +189,8 @@ images automatically from your monitor layout.
   `StartCalendarInterval` entries in
   `~/Library/LaunchAgents/com.ianmatson.wallpaper.plist` on macOS, or the
   trigger hours in `install.ps1` and rerun it on Windows.
-- The macOS display watcher only reads cached files; monitor changes never make
-  network requests.
+- The macOS system-event watcher only reads cached files. Monitor, wake, and
+  Space events never make network requests.
 - Setting your own wallpaper on **any** screen counts as opting out on macOS —
   Wallpaper Journey uninstalls itself entirely rather than fight you for the
   other screens at the next poll.
@@ -198,26 +200,25 @@ images automatically from your monitor layout.
   desktop set up before the rename would go blank. Uninstalling removes the
   symlink. On Windows the old `DailyWallpaper` scheduled task is unregistered
   when you rerun `install.ps1`.
-- macOS notices an opt-out within seconds, because the watcher listens for the
-  system's background-changed notification. Windows has no equivalent resident
-  process, so it notices at the next scheduled poll — up to four hours later.
+- macOS notices an opt-out within seconds, because the watcher checks the
+  wallpaper store timestamp every two seconds. Windows has no equivalent
+  resident process, so it notices at the next scheduled poll — up to four hours
+  later.
 - The opt-out detection compares the current wallpaper path against Wallpaper Journey's
   own file: `~/WallpaperJourney` on macOS, `current.jpg` on Windows. If you keep old
   macOS Spaces that still show a wallpaper from before you subscribed, visiting one can read
   as opting out.
 - On macOS every Space stores its wallpaper as a file path, and the only public
-  API to set one reaches the Space on screen. So the wallpaper is always the
-  same three paths — `current-left.jpg`, `current-middle.jpg`,
-  `current-right.jpg` — and the daily run swaps the images behind them and
-  restarts the wallpaper agent, which reloads every Space from disk. One
-  download in the morning reaches all of them, and a Space made later inherits
-  a path that is already current.
-- Those fixed paths are hard links to the dated files, so the archive costs no
-  extra disk, and pruning a dated name never takes the image away from a Space
-  still using it.
+  API to set one reaches the Space on screen. Wallpaper Journey alternates
+  between `current-a-*` and `current-b-*` paths. A daily update changes the URL
+  instead of relying on macOS to notice new bytes at the same URL. It then
+  updates the other Spaces and restarts the wallpaper agent when needed.
+- Those active paths are hard links to the dated files, so the archive costs no
+  extra disk. The previous path set stays valid while hidden Spaces move to the
+  current set.
 - Spaces set up by an earlier version still point at a dated filename. Each one
-  moves to the fixed path the first time you visit it after upgrading; until
-  then it keeps showing the image it last received.
+  moves to the active path set during convergence after upgrading. Until then,
+  it keeps showing the image it last received.
 - If the machine is asleep at a scheduled poll, both platforms run the job at
   the next wake (Windows via the task's `StartWhenAvailable`), and the remaining
   polls that day give it more chances.

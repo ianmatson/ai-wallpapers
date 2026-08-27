@@ -7,7 +7,7 @@
 
 set -u
 
-VERSION=2   # bump on any consumer change, and keep consumer/VERSION in the repo equal
+VERSION=3   # bump on any consumer change, and keep consumer/VERSION in the repo equal
 
 # Don't inherit whatever PATH the caller had. Several steps here fail quietly
 # when a tool is missing — a lost osascript reads as "no Spaces reference
@@ -16,6 +16,7 @@ PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 
 REPO="https://github.com/ianmatson/wallpaper-journey"
+SCRIPT_PATH="${0:A}"
 DIR="$HOME/WallpaperJourney"   # where images are saved — change this and both plist paths together
 # Installs predating the rename kept their images here. The folder is left
 # behind as a symlink so Spaces still pointing inside it keep rendering, which
@@ -25,16 +26,24 @@ KEEP=7                  # days of wallpapers to retain
 CURRENT_TAG_FILE="$DIR/current-tag"
 APPLIED_MARKER="$DIR/.applied"
 RELOAD_MARKER="$DIR/.reloading"
+RELOAD_OWED_MARKER="$DIR/.reload-owed"
+SYSTEM_EVENT_MARKER="$DIR/.system-change-pending"
+SYSTEM_EVENT_TTL=900
 NOTICE_MARKER="$DIR/.update-noticed"   # highest version already announced
+STABLE_SET_FILE="$DIR/.stable-set"
+TOPOLOGY_FILE="$DIR/.display-topology"
+LOCK_FILE="/tmp/com.ianmatson.wallpaper-journey.$EUID.lock"
 QUIET_AFTER_RELOAD=30   # seconds to leave the restarting wallpaper agent alone
-# Every Space stores its own wallpaper as a file path. Pointing them all at
-# these three unchanging paths is what lets one morning download reach every
-# desktop: the paths stay put and only the bytes behind them change.
+# Every Space stores its own wallpaper as a file path. Two sets of paths let a
+# daily update switch URLs instead of asking macOS to notice new bytes at the
+# same URL. Old Spaces keep a valid previous set until convergence moves them.
 STABLE_PREFIX="$DIR/current"
 WALLPAPER_STORE="$HOME/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
 LOG_DIR="$HOME/Library/Logs/WallpaperJourney"   # where launchd sends both jobs' output
 STABLE_CHANGED=0
 CONVERGE_PENDING=0
+APPLY_CHANGED=0
+typeset -a SYSTEM_EVENT_SNAPSHOT=()
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 DAILY_JOB="com.ianmatson.wallpaper"
 WATCHER_JOB="com.ianmatson.wallpaper-watcher"
@@ -44,6 +53,49 @@ mkdir -p "$DIR"
 # Timestamped line for the launchd logs; a manual run shows it on the terminal.
 note() {
   print -r -- "[$(date '+%F %T')] $*"
+}
+
+stable_set() {
+  local set=""
+
+  [[ -r "$STABLE_SET_FILE" ]] && set="$(<"$STABLE_SET_FILE")"
+  [[ "$set" == a || "$set" == b ]] || return 1
+  print -r -- "$set"
+}
+
+active_stable_prefix() {
+  local set
+
+  set=$(stable_set) || set=a
+  print -r -- "$STABLE_PREFIX-$set"
+}
+
+stable_ready() {
+  local prefix="${1:-$(active_stable_prefix)}"
+  local slot
+
+  for slot in left middle right; do
+    [[ -s "$prefix-$slot.jpg" ]] || return 1
+  done
+}
+
+stable_matches_tag() {
+  local tag="$1"
+  local prefix
+  local set
+  local slot
+
+  if (( $# >= 2 )); then
+    prefix="$2"
+  else
+    set=$(stable_set) || return 1
+    prefix="$STABLE_PREFIX-$set"
+  fi
+  for slot in left middle right; do
+    [[ "$DIR/$tag-landscape-$slot.jpg" -ef "$prefix-$slot.jpg" ]] \
+      || cmp -s -- "$DIR/$tag-landscape-$slot.jpg" "$prefix-$slot.jpg" \
+      || return 1
+  done
 }
 
 cached_tag() {
@@ -71,28 +123,51 @@ cached_tag() {
   print -r -- "$tag"
 }
 
-# Repoints the fixed wallpaper paths at a day's panels. Hard links, so the
-# archive and the live wallpaper share one copy of each image on disk, and a
-# pruned archive name never takes the bytes away from a Space still using them.
-# Sets STABLE_CHANGED when anything moved.
+# Publishes a complete day to the inactive a/b path set, then moves one small
+# marker to make that set active. Hard links keep the archive and live paths on
+# one copy of the bytes. Alternating the paths avoids macOS's same-URL cache.
+# Sets STABLE_CHANGED when the active set moved.
 publish_stable() {
   local tag="$1"
+  local current=""
+  local target
+  local target_prefix
   local slot
   local src
   local dst
   local tmp
+  local marker_tmp
 
   STABLE_CHANGED=0
+  if current=$(stable_set); then
+    if stable_matches_tag "$tag" "$STABLE_PREFIX-$current"; then
+      return 0
+    fi
+    [[ "$current" == a ]] && target=b || target=a
+  else
+    target=a
+  fi
+  target_prefix="$STABLE_PREFIX-$target"
+
+  # The active marker stays on the old complete set until every new link is in
+  # place. A stopped process can leave only an unused inactive set behind.
   for slot in left middle right; do
     src="$DIR/$tag-landscape-$slot.jpg"
-    dst="$STABLE_PREFIX-$slot.jpg"
+    dst="$target_prefix-$slot.jpg"
     [[ -s "$src" ]] || return 1
-    [[ "$src" -ef "$dst" ]] && continue
     tmp="$dst.new.$$"
     ln -f -- "$src" "$tmp" 2>/dev/null || cp -f -- "$src" "$tmp" || { rm -f -- "$tmp"; return 1; }
     mv -f -- "$tmp" "$dst" || { rm -f -- "$tmp"; return 1; }
-    STABLE_CHANGED=1
   done
+
+  marker_tmp="$STABLE_SET_FILE.$$"
+  print -r -- "$target" > "$marker_tmp" || return 1
+  # Persist this before the active-bank commit. If the process stops after the
+  # commit, a later event still knows that WallpaperAgent must reload the new
+  # bytes. An early marker only causes one harmless reload of the old bank.
+  : > "$RELOAD_OWED_MARKER" || { rm -f -- "$marker_tmp"; return 1; }
+  mv -f -- "$marker_tmp" "$STABLE_SET_FILE" || { rm -f -- "$marker_tmp"; return 1; }
+  STABLE_CHANGED=1
   return 0
 }
 
@@ -102,11 +177,14 @@ publish_stable() {
 # place. $1 selects the question:
 #   status      ours / "theirs <unix-time>" / "theirs unknown" / nothing
 #   referenced  paths under our folders that some desktop still points at
-#   converge    rewrite the store so every desktop points at the fixed paths
+#   converge    rewrite the store so every desktop points at the active paths
 #   describe    one readable line per display and Space, for --status
 # The callers below document what each answer means.
 store_query() {
-  osascript -l JavaScript - "$1" "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$STABLE_PREFIX" 2>/dev/null <<'EOF'
+  local stable_prefix
+
+  stable_prefix=$(active_stable_prefix)
+  osascript -l JavaScript - "$1" "$WALLPAPER_STORE" "$DIR" "$LEGACY_DIR" "$stable_prefix" 2>/dev/null <<'EOF'
 function run(argv) {
   ObjC.import("AppKit");
   const mode = argv[0];
@@ -262,13 +340,17 @@ function run(argv) {
       return "middle";
     }
 
-    const store = loadStore(true);
-    if (store === null) return "";
+    // Keep the exact bytes that we decoded. WallpaperAgent can save the same
+    // file while this process works, so never replace a newer agent write with
+    // a tree that came from an older snapshot.
+    const originalData = $.NSData.dataWithContentsOfFile(storePath);
+    const store = parsePlist(originalData, true);
+    if (store === null || !store.isKindOfClass($.NSDictionary)) return "pending";
 
     let changed = false;
     let pending = false;
 
-    // Ours under a dated or pre-rename path is repointed at the fixed path for
+    // Ours under a dated or pre-rename path is repointed at the active path for
     // its panel, so a stale entry can serve as a source like any other.
     function normalize(desktop) {
       const path = imagePath(desktop);
@@ -301,13 +383,15 @@ function run(argv) {
     }
 
     const displays = dict(store.objectForKey("Displays"));
-    if (displays === null) return "";
+    if (displays === null) return "pending";
     const spaces = dict(store.objectForKey("Spaces"));
 
-    // Everything on one display converges to one entry, so gather each
-    // display's holders first: its own entry, plus each of its Spaces'
-    // per-display entry and Default twin.
+    // Everything on one display converges to one entry, so gather its own
+    // holder plus each Space's explicit holder for that display. A Space has
+    // only one shared Default holder. It cannot represent several displays and
+    // must never be added to every display group.
     const byDisplay = {};
+    const defaults = [];
     function holdersFor(key) {
       return byDisplay[key] || (byDisplay[key] = []);
     }
@@ -319,14 +403,14 @@ function run(argv) {
       spaces.allKeys.js.forEach(function (skey) {
         const space = dict(spaces.objectForKey(skey));
         if (space === null) return;
+        const def = dict(space.objectForKey("Default"));
+        if (def !== null) defaults.push(def);
         const perDisplay = dict(space.objectForKey("Displays"));
         if (perDisplay === null) return;
-        const def = dict(space.objectForKey("Default"));
         perDisplay.allKeys.js.forEach(function (dkey) {
           const holder = dict(perDisplay.objectForKey(dkey));
           if (holder === null) return;
           holdersFor(ObjC.unwrap(dkey)).push(holder);
-          if (def !== null) holdersFor(ObjC.unwrap(dkey)).push(def);
         });
       });
     }
@@ -370,10 +454,21 @@ function run(argv) {
       });
     });
 
+    // Keep an existing app-owned Default on the active a/b path for its own
+    // panel. Leave a foreign Default alone because no single display model is
+    // correct for a fallback that is shared by all displays.
+    defaults.forEach(function (holder) {
+      const desktop = dict(holder.objectForKey("Desktop"));
+      if (desktop !== null && ours(imagePath(desktop))) normalize(desktop);
+    });
+
     if (changed) {
       const outData = $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
         store, 200, 0, Ref());
-      if (outData.isNil() || !outData.writeToFileAtomically(storePath, true)) changed = false;
+      if (outData.isNil()) return "pending";
+      const currentData = $.NSData.dataWithContentsOfFile(storePath);
+      if (currentData.isNil() || !currentData.isEqualToData(originalData)) return "pending";
+      if (!outData.writeToFileAtomically(storePath, true)) return "pending";
     }
     return (changed ? "changed " : "") + (pending ? "pending" : "");
   }
@@ -428,7 +523,7 @@ EOF
 # ours the agent stamped most recently — apply_tag's write is always the
 # newest — and copy it over every entry on that display that differs, Spaces
 # and the display's own entry alike. That converts a desktop showing something
-# foreign, repoints a dated or pre-rename path at the fixed paths, corrects a
+# foreign, repoints a dated or pre-rename path at the active paths, corrects a
 # Space carrying the wrong panel for its display, and gives new Spaces an ours
 # entry to inherit. The agent reload that follows lands it all on screen.
 #
@@ -448,16 +543,52 @@ converge_store() {
   local out
 
   CONVERGE_PENDING=0
-  out=$(store_query converge)
-  [[ "$out" == *changed* ]] && STABLE_CHANGED=1
+  if ! out=$(store_query converge); then
+    CONVERGE_PENDING=1
+    note "wallpaper store query failed; postponing its reload"
+    return 0
+  fi
+  if [[ "$out" == *changed* ]]; then
+    STABLE_CHANGED=1
+    : > "$RELOAD_OWED_MARKER" || note "could not save the pending reload marker"
+  fi
   [[ "$out" == *pending* ]] && CONVERGE_PENDING=1
   return 0
 }
 
-# Restarting the wallpaper agent makes it reload every Space from disk. Because
-# each Space points at a path whose bytes we just replaced, they all come back
-# showing today's image — no per-Space API, and the agent's own store is never
-# written to. SIP blocks launchctl kickstart for this service, so signal it.
+reload_owed() {
+  (( STABLE_CHANGED )) || [[ -e "$RELOAD_OWED_MARKER" ]]
+}
+
+# The wallpaper agent saves a public-API change to its store a few seconds
+# after the setter returns. Wait for that model when a setter ran. A no-op apply
+# can converge at once. Reload only when a bank or store entry changed.
+settle_and_converge() {
+  local tag="$1"
+  local first_delay="${2:-5}"
+  local try
+
+  for try in 1 2 3 4 5; do
+    if (( try == 1 )); then
+      (( first_delay > 0 )) && sleep "$first_delay"
+    else
+      sleep 5
+    fi
+    converge_store
+    (( CONVERGE_PENDING )) || break
+    note "converge pending (agent not settled yet), try $try of 5"
+  done
+  if (( CONVERGE_PENDING )); then
+    note "converge still pending; the next event retries before any reload"
+  elif reload_owed; then
+    note "reloading the wallpaper agent so every desktop picks up $tag"
+    reload_all_spaces
+  fi
+}
+
+# Restarting the wallpaper agent makes it reload every Space from the store
+# that convergence just updated. SIP blocks launchctl kickstart for this
+# service, so signal the agent instead.
 #
 # The marker dates the restart. Until the agent has read its store back it
 # answers with whatever it likes, and the watcher must not read one of those
@@ -465,6 +596,7 @@ converge_store() {
 reload_all_spaces() {
   : > "$RELOAD_MARKER"
   killall WallpaperAgent 2>/dev/null || true
+  rm -f -- "$RELOAD_OWED_MARKER"
 }
 
 # True while the wallpaper agent is still coming back from our own reload.
@@ -475,62 +607,257 @@ reloading() {
   (( $(date +%s) - stamp < QUIET_AFTER_RELOAD ))
 }
 
+# The watcher writes this marker before it queues a display, wake, or Space
+# apply. A check that is already running must not treat that short transition
+# as a manual opt-out while the watcher waits for its one child task to finish.
+system_change_pending() {
+  local marker
+  local stamp
+
+  for marker in "$SYSTEM_EVENT_MARKER".*(N); do
+    stamp=$(stat -f %m "$marker" 2>/dev/null) || continue
+    (( $(date +%s) - stamp < SYSTEM_EVENT_TTL )) && return 0
+  done
+  return 1
+}
+
+# Capture exact marker names before an operation. Each event gets a unique file,
+# so deleting this snapshot after success cannot delete a newer queued event.
+capture_system_events() {
+  SYSTEM_EVENT_SNAPSHOT=("$SYSTEM_EVENT_MARKER".*(N))
+}
+
+complete_system_events() {
+  (( ${#SYSTEM_EVENT_SNAPSHOT} > 0 )) \
+    && rm -f -- "${SYSTEM_EVENT_SNAPSHOT[@]}"
+  SYSTEM_EVENT_SNAPSHOT=()
+}
+
+# APPLIED_MARKER is the opt-out cutoff, not an activity timestamp. Create it
+# for an older installation, and move it only after at least one setter worked.
+record_apply_success() {
+  local did_set="$1"
+
+  if (( did_set )) || [[ ! -e "$APPLIED_MARKER" ]]; then
+    : > "$APPLIED_MARKER"
+  fi
+}
+
 apply_tag() {
   local tag="$1"
-  local count
-  local slot
-  local i
-  local -a slots
-  local -a rotation
-  local -a files
+  local prefix
+  local output
+  local state
+  local diagnostics
+  local topology_tmp
+  local attempt
+  local set_count
+  local applied_any=0
 
-  # One image slot per connected display: 1 monitor gets middle, 2 get the
-  # adjacent left+middle pair, 3 get all three, more than 3 cycle again.
-  count=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); $.NSScreen.screens.count' 2>/dev/null)
-  (( count >= 1 )) || count=1
-  case $count in
-    1) slots=(middle) ;;
-    2) slots=(left middle) ;;   # adjacent panels, so the pair stays continuous
-    *) rotation=(left middle right)
-       slots=()
-       for ((i = 0; i < count; i++)); do
-         slots+=("${rotation[$((i % 3 + 1))]}")
-       done ;;
-  esac
+  APPLY_CHANGED=0
 
-  # Upgrades from a version that pointed Spaces at dated filenames land here
-  # with no fixed paths yet.
-  [[ -s "$STABLE_PREFIX-middle.jpg" ]] || publish_stable "$tag" || return 1
+  # Upgrades and interrupted publications can have no active path set, or an
+  # active set for an older cached tag. Publish a complete alternate set first.
+  stable_matches_tag "$tag" || publish_stable "$tag" || return 1
+  prefix=$(active_stable_prefix)
+  stable_ready "$prefix" || return 1
 
-  files=()
-  for slot in "${slots[@]}"; do
-    [[ -s "$STABLE_PREFIX-$slot.jpg" ]] || return 1
-    files+=("$STABLE_PREFIX-$slot.jpg")
-  done
-
-  # Set one image per screen, leftmost first. Keeps each screen's scaling mode.
-  osascript -l JavaScript - "${files[@]}" <<'EOF'
+  # One JXA process owns one complete operation. It snapshots the ordered
+  # displays, chooses the slots, applies every file, and then verifies that the
+  # topology did not change under it. A changed topology or failed setter makes
+  # the whole attempt fail so the shell can retry from a fresh snapshot.
+  for attempt in 1 2 3; do
+    if output=$(osascript -l JavaScript - \
+      "$prefix-left.jpg" "$prefix-middle.jpg" "$prefix-right.jpg" 2>&1 <<'EOF'
 function run(argv) {
   ObjC.import("AppKit");
+  ObjC.import("CoreGraphics");
+  ObjC.import("Foundation");
+  ObjC.bindFunction("CGDisplayCreateUUIDFromDisplayID", ["id", ["unsigned int"]]);
+  ObjC.bindFunction("CFMakeCollectable", ["id", ["void *"]]);
+
+  if (argv.length !== 3) throw new Error("expected left, middle, and right image paths");
+
+  const fm = $.NSFileManager.defaultManager;
+  argv.forEach((path) => {
+    if (!fm.fileExistsAtPath(path)) throw new Error("wallpaper file is missing: " + path);
+  });
+
+  function uuidFor(displayID) {
+    try {
+      const uuidRef = $.CGDisplayCreateUUIDFromDisplayID(displayID);
+      if (uuidRef.isNil()) return "display-" + displayID;
+      const stringRef = $.CFUUIDCreateString(null, uuidRef);
+      const stringObject = $.CFMakeCollectable(stringRef);
+      if (stringObject.isNil()) return "display-" + displayID;
+      const value = ObjC.unwrap(stringObject);
+      if (value) return String(value);
+    } catch (_) {}
+    return "display-" + displayID;
+  }
+
+  function displaySnapshot() {
+    const items = $.NSScreen.screens.js.map((screen) => {
+      const number = screen.deviceDescription.objectForKey("NSScreenNumber");
+      if (number.isNil()) throw new Error("a screen has no Core Graphics display ID");
+      const displayID = Number(ObjC.unwrap(number));
+      const frame = screen.frame;
+      let name = "";
+      try { name = String(ObjC.unwrap(screen.localizedName) || ""); } catch (_) {}
+
+      return {
+        screen: screen,
+        id: displayID,
+        uuid: uuidFor(displayID),
+        name: name,
+        frame: {
+          x: Number(frame.origin.x),
+          y: Number(frame.origin.y),
+          width: Number(frame.size.width),
+          height: Number(frame.size.height),
+        },
+        scale: Number(screen.backingScaleFactor),
+        pixels: {
+          width: Number($.CGDisplayPixelsWide(displayID)),
+          height: Number($.CGDisplayPixelsHigh(displayID)),
+        },
+        rotation: Number($.CGDisplayRotation(displayID)),
+        mirror: {
+          inSet: Boolean($.CGDisplayIsInMirrorSet(displayID)),
+          always: Boolean($.CGDisplayIsAlwaysInMirrorSet(displayID)),
+          sourceID: Number($.CGDisplayMirrorsDisplay(displayID)),
+        },
+      };
+    });
+
+    items.sort((a, b) => {
+      const horizontal = a.frame.x - b.frame.x;
+      const vertical = b.frame.y - a.frame.y;
+      return horizontal || vertical || a.uuid.localeCompare(b.uuid);
+    });
+    if (items.length === 0) throw new Error("macOS reported no displays");
+    return items;
+  }
+
+  function plain(items) {
+    return items.map((item) => ({
+      id: item.id,
+      uuid: item.uuid,
+      name: item.name,
+      frame: item.frame,
+      scale: item.scale,
+      pixels: item.pixels,
+      rotation: item.rotation,
+      mirror: item.mirror,
+    }));
+  }
+
+  function fingerprint(items) {
+    return JSON.stringify(items.map((item) => ({
+      uuid: item.uuid,
+      frame: item.frame,
+      scale: item.scale,
+      pixels: item.pixels,
+      rotation: item.rotation,
+      mirror: item.mirror,
+    })));
+  }
+
+  function slotFor(count, index) {
+    if (count === 1) return 1;
+    if (count === 2) return index;
+    return index % 3;
+  }
+
   const ws = $.NSWorkspace.sharedWorkspace;
-  const screens = $.NSScreen.screens.js.sort((a, b) => {
-    const horizontal = a.frame.origin.x - b.frame.origin.x;
-    return horizontal || b.frame.origin.y - a.frame.origin.y;
-  });
-  screens.forEach((screen, index) => {
-    const url = $.NSURL.fileURLWithPath(argv[index % argv.length]);
-    ws.setDesktopImageURLForScreenOptionsError(
+  const before = displaySnapshot();
+  const beforeFingerprint = fingerprint(before);
+  const failures = [];
+  const assignments = [];
+  let setCount = 0;
+
+  before.forEach((item, index) => {
+    const slot = slotFor(before.length, index);
+    const path = argv[slot];
+    const url = $.NSURL.fileURLWithPath(path);
+    const current = ws.desktopImageURLForScreen(item.screen);
+    const assignment = {
+      uuid: item.uuid,
+      name: item.name,
+      slot: ["left", "middle", "right"][slot],
+      path: path,
+      result: "unchanged",
+    };
+    assignments.push(assignment);
+    if (!current.isNil() && ObjC.unwrap(current.path) === path) return;
+    const error = Ref();
+    const ok = ws.setDesktopImageURLForScreenOptionsError(
       url,
-      screen,
-      ws.desktopImageOptionsForScreen(screen),
-      $()
+      item.screen,
+      ws.desktopImageOptionsForScreen(item.screen),
+      error
     );
+    if (!Boolean(ok)) {
+      assignment.result = "failed";
+      let message = "macOS rejected the wallpaper";
+      try {
+        const nativeError = error[0];
+        if (nativeError !== undefined && !nativeError.isNil()) {
+          message = String(ObjC.unwrap(nativeError.localizedDescription) || message);
+        }
+      } catch (_) {}
+      failures.push({
+        uuid: item.uuid,
+        name: item.name,
+        slot: ["left", "middle", "right"][slot],
+        path: path,
+        error: message,
+      });
+    } else {
+      assignment.result = "applied";
+      setCount += 1;
+    }
   });
+
+  const after = displaySnapshot();
+  const details = JSON.stringify({
+    displays: plain(after),
+    assignments: assignments,
+    failures: failures,
+    setCount: setCount,
+  });
+  if (beforeFingerprint !== fingerprint(after)) return "RETRY_TOPOLOGY\n" + details;
+  if (failures.length > 0) return "ERROR\n" + details;
+  return "OK\n" + details;
 }
 EOF
-  # The marker records that this machine has shown a Wallpaper Journey
-  # wallpaper, so a pre-install desktop never reads as the user opting back out.
-  [[ $? -eq 0 ]] && : > "$APPLIED_MARKER"
+    ); then
+      state="${output%%$'\n'*}"
+      diagnostics="${output#*$'\n'}"
+      set_count=$(print -r -- "$diagnostics" \
+        | sed -n 's/.*"setCount":\([0-9][0-9]*\)}$/\1/p')
+      [[ "$set_count" == <-> ]] && (( set_count > 0 )) && applied_any=1
+      if [[ "$state" == OK ]]; then
+        topology_tmp="$TOPOLOGY_FILE.$$"
+        print -r -- "$diagnostics" > "$topology_tmp" || return 1
+        mv -f -- "$topology_tmp" "$TOPOLOGY_FILE" || { rm -f -- "$topology_tmp"; return 1; }
+        # This timestamp is the opt-out cutoff. Do not move it when every URL
+        # already matched: a no-op system event must not hide a wallpaper the
+        # user selected earlier on another Space. A missing marker is created
+        # once so an older installation can migrate safely.
+        record_apply_success "$applied_any"
+        APPLY_CHANGED=$applied_any
+        return 0
+      fi
+      note "wallpaper apply attempt $attempt of 3 returned $state"
+      [[ -n "$diagnostics" ]] && print -u2 -r -- "$diagnostics"
+    else
+      note "wallpaper apply attempt $attempt of 3 failed"
+      [[ -n "$output" ]] && print -u2 -r -- "$output"
+    fi
+    (( attempt < 3 )) && sleep 1
+  done
+  return 1
 }
 
 # Prints "ours" when every screen's wallpaper lives in $DIR or the folder used
@@ -543,11 +870,10 @@ wallpaper_status() {
   store_query status
 }
 
-# Where the subscription stands on the desktops currently on screen:
-#   optout   the user chose a wallpaper after our most recent apply
-#   ok       every screen is ours, or shows a desktop we have never reached
-#   unknown  a screen is not ours and nothing on hand says when it was chosen
-subscription_state() {
+# One immediate sample of the subscription state. Confirmation sleeps before
+# any mutation lock, and a recent system-event marker rejects a transient
+# foreign screen while the watcher's queued apply waits to run.
+subscription_sample() {
   local state          # not "status": zsh keeps that one read-only
   local chosen
   local applied
@@ -580,13 +906,31 @@ subscription_state() {
   # recent apply is a real opt-out.
   (( chosen > applied )) || { print -r -- ok; return; }
 
-  # Confirm after a pause so our own apply, caught mid-flight with only some
-  # screens set, never reads as a manual change.
+  # The watcher can receive a system event while this check is in its confirm
+  # delay. Its queued apply runs after this process exits, so leave the
+  # subscription alone until that apply has corrected the visible desktop.
+  system_change_pending && { print -r -- unknown; return; }
+
+  print -r -- optout
+}
+
+# Where the subscription stands on the desktops currently on screen:
+#   optout   the user chose a wallpaper after our most recent apply
+#   ok       every screen is ours, or shows a desktop we have never reached
+#   unknown  a screen is not ours and nothing on hand says when it was chosen
+subscription_state() {
+  local first
+  local second
+
+  first=$(subscription_sample)
+  [[ "$first" == optout ]] || { print -r -- "$first"; return; }
+
+  # Require a second independent opt-out sample. If a display, wake, or Space
+  # event arrives during this delay, its marker makes that sample unknown and
+  # the watcher runs the queued apply after this process exits.
   sleep 3
-  case "$(wallpaper_status)" in
-    'theirs '*) print -r -- optout ;;
-    *) print -r -- ok ;;
-  esac
+  second=$(subscription_sample)
+  print -r -- "$second"
 }
 
 # Removes everything the installer created. $1 is the launchd job the caller
@@ -610,7 +954,9 @@ uninstall() {
     "$LOG_DIR/wallpaper.log" "$LOG_DIR/wallpaper-watcher.log" \
     /tmp/wallpaper.log /tmp/wallpaper-watcher.log \
     "$DIR"/wall-*(N) "$STABLE_PREFIX"-*.jpg(N) "$CURRENT_TAG_FILE" "$APPLIED_MARKER" \
-    "$RELOAD_MARKER" "$NOTICE_MARKER" \
+    "$RELOAD_MARKER" "$RELOAD_OWED_MARKER" "$NOTICE_MARKER" \
+    "$STABLE_SET_FILE" "$TOPOLOGY_FILE" \
+    "$SYSTEM_EVENT_MARKER" "$SYSTEM_EVENT_MARKER".*(N) \
     "$DIR/wallpaper-watcher.js" "$DIR/wallpaper.sh"
   rmdir -- "$DIR" "$LOG_DIR" 2>/dev/null || true
   # The compatibility symlink left by the rename, but never a real folder that
@@ -667,6 +1013,7 @@ show_status() {
   local job
   local when
   local state
+  local path_set
 
   print -r -- "Wallpaper Journey consumer version $VERSION"
   for job in "$DAILY_JOB" "$WATCHER_JOB"; do
@@ -686,6 +1033,16 @@ show_status() {
   else
     print -r -- "last applied: never"
   fi
+  if path_set=$(stable_set); then
+    print -r -- "active path set: $path_set"
+  else
+    print -r -- "active path set: none"
+  fi
+  if [[ -r "$TOPOLOGY_FILE" ]]; then
+    print -r -- "last applied topology: $(<"$TOPOLOGY_FILE")"
+  else
+    print -r -- "last applied topology: none"
+  fi
   state="$(wallpaper_status)"
   print -r -- "screens now: ${state:-unknown}"
   print -r -- "logs: $LOG_DIR"
@@ -693,8 +1050,8 @@ show_status() {
   store_query describe | sed 's/^/  /'
 }
 
-# Paths under $DIR that the wallpaper agent still points a Space at. Read only;
-# an unreadable or reshaped store just yields nothing and pruning carries on.
+# Paths under $DIR that the wallpaper agent still points a Space at. Read only.
+# The caller prunes only after convergence proves that the store is readable.
 referenced_images() {
   store_query referenced
 }
@@ -726,18 +1083,19 @@ refresh() {
   local out
   local tmp
   local tag_tmp
-  local try
 
   # Resolve today's release tag from the /latest redirect (no API, no token).
-  tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$REPO/releases/latest") || return 0
+  tag=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+    -o /dev/null -w '%{url_effective}' "$REPO/releases/latest") \
+    || { note "latest release lookup failed"; return 1; }
   tag="${tag##*/}"
-  [[ "$tag" == wall-* ]] || return 0
+  [[ "$tag" == wall-* ]] || { note "latest release tag is not a wallpaper release"; return 1; }
 
   # A desktop can be behind even when the release has not moved, so catch those
   # up before the early exit below rather than after it.
-  if [[ -s "$STABLE_PREFIX-middle.jpg" ]]; then
+  if stable_set >/dev/null && stable_ready; then
     converge_store
-    if (( STABLE_CHANGED )); then
+    if (( ! CONVERGE_PENDING )) && reload_owed; then
       note "caught up desktops that were behind; reloading the wallpaper agent"
       reload_all_spaces
     fi
@@ -746,8 +1104,9 @@ refresh() {
   # This runs several times a day so a late release still lands the same day.
   # Once the newest triptych is cached and on screen there is nothing to do,
   # and stopping here avoids re-setting a wallpaper that is already correct.
-  if [[ -r "$CURRENT_TAG_FILE" && "$(<"$CURRENT_TAG_FILE")" == "$tag" ]] \
-    && [[ -s "$STABLE_PREFIX-middle.jpg" ]] \
+  if (( ! CONVERGE_PENDING )) \
+    && [[ -r "$CURRENT_TAG_FILE" && "$(<"$CURRENT_TAG_FILE")" == "$tag" ]] \
+    && stable_matches_tag "$tag" \
     && [[ "$(wallpaper_status)" == ours ]]; then
     return 0
   fi
@@ -760,7 +1119,8 @@ refresh() {
     out="$DIR/$tag-landscape-$slot.jpg"
     [[ -s "$out" ]] && continue
     tmp="$out.download.$$"
-    curl -fsSL -o "$tmp" "$REPO/releases/latest/download/landscape-$slot.jpg" \
+    curl -fsSL --connect-timeout 10 --max-time 60 \
+      -o "$tmp" "$REPO/releases/latest/download/landscape-$slot.jpg" \
       || { rm -f "$tmp"; note "download failed: landscape-$slot.jpg"; return 1; }
     [[ -s "$tmp" ]] || { rm -f "$tmp"; note "download empty: landscape-$slot.jpg"; return 1; }
     mv "$tmp" "$out"
@@ -771,54 +1131,92 @@ refresh() {
   print -r -- "$tag" > "$tag_tmp"
   mv "$tag_tmp" "$CURRENT_TAG_FILE"
 
-  # Swap the bytes behind the fixed paths first, then set the visible desktops,
-  # then converge the store so every other Space points at those paths too, then
-  # make the agent reload. Order matters twice over: the new images must be in
-  # place before anything points at them, and the converge must read the store
+  # Publish the inactive path bank first, then set the visible desktops, then
+  # converge the store so every other Space points at that bank, and finally
+  # make the agent reload. The converge must read the store
   # only after the agent has saved what apply_tag just set — it does so a few
   # seconds after a change, and converging a display needs an ours entry on it
   # to copy. Pending means that save has not landed yet, so wait and try again
   # rather than reloading a store that still has desktops to catch.
-  publish_stable "$tag" || { note "publishing the fixed paths failed"; return 1 }
+  publish_stable "$tag" || { note "publishing the active paths failed"; return 1 }
   apply_tag "$tag" || { note "applying to the visible displays failed"; return 1 }
   note "applied $tag to the visible displays"
-  for try in 1 2 3 4 5; do
-    sleep 5
-    converge_store
-    (( CONVERGE_PENDING )) || break
-    note "converge pending (agent not settled yet), try $try of 5"
-  done
-  (( CONVERGE_PENDING )) && note "converge still pending; the next poll retries"
-  if (( STABLE_CHANGED )); then
-    note "reloading the wallpaper agent so every desktop picks up $tag"
-    reload_all_spaces
+  settle_and_converge "$tag" "$(( APPLY_CHANGED ? 5 : 0 ))"
+  if (( CONVERGE_PENDING )); then
+    note "skipping cache pruning until the wallpaper store is readable and settled"
+  else
+    prune_cache
   fi
-  prune_cache
+}
+
+# lockf queues every Wallpaper Journey mutator on one kernel-managed lock. The
+# kernel releases it after normal exits, signals, and crashes. Keep the file so
+# no waiter can hold an older unlinked inode. Wait without a lock timeout: each
+# network call has its own limit, and a queued system event must not be lost.
+with_operation_lock() {
+  local action="$1"
+  shift
+
+  WALLPAPER_JOURNEY_LOCKED=1 /usr/bin/lockf -k \
+    "$LOCK_FILE" "$SCRIPT_PATH" "--locked-$action" "$@"
+}
+
+require_operation_lock() {
+  [[ "${WALLPAPER_JOURNEY_LOCKED:-}" == 1 ]] || {
+    print -u2 -- "internal command requires the Wallpaper Journey operation lock"
+    exit 2
+  }
 }
 
 case "${1:-refresh}" in
   refresh|--refresh)
     case "$(subscription_state)" in
-      optout) self_destruct "$DAILY_JOB" ;;
-      ok) refresh; update_notice ;;
+      optout) with_operation_lock optout "$DAILY_JOB" ;;
+      ok) with_operation_lock refresh && update_notice ;;
     esac
     ;;
   apply|--apply)
-    tag=$(cached_tag) || exit 0
-    note "display change: reapplying cached $tag"
-    apply_tag "$tag"
+    with_operation_lock apply
     ;;
   status|--status)
     show_status
     ;;
   check|--check)
     if [[ "$(subscription_state)" == optout ]]; then
-      self_destruct "$WATCHER_JOB"
+      with_operation_lock optout "$WATCHER_JOB"
     fi
     ;;
   uninstall|--uninstall)
+    with_operation_lock uninstall "$WATCHER_JOB"
+    ;;
+  --locked-refresh)
+    require_operation_lock
+    capture_system_events
+    case "$(subscription_sample)" in
+      ok) refresh && complete_system_events ;;
+      optout) note "a manual wallpaper change appeared while refresh waited; leaving it alone" ;;
+    esac
+    ;;
+  --locked-apply)
+    require_operation_lock
+    capture_system_events
+    tag=$(cached_tag) || exit 0
+    note "system change: reapplying cached $tag"
+    apply_tag "$tag" || { note "applying to the visible displays failed"; exit 1; }
+    note "applied $tag to the visible displays"
+    settle_and_converge "$tag" "$(( APPLY_CHANGED ? 5 : 0 ))"
+    complete_system_events
+    ;;
+  --locked-optout)
+    require_operation_lock
+    if [[ "$(subscription_sample)" == optout ]]; then
+      self_destruct "$2"
+    fi
+    ;;
+  --locked-uninstall)
+    require_operation_lock
     print -r -- "Removing Wallpaper Journey's launch agents, scripts, images, and logs."
-    uninstall "$WATCHER_JOB"
+    uninstall "$2"
     ;;
   *)
     print -u2 -- "usage: $0 [--refresh|--apply|--check|--status|--uninstall]"

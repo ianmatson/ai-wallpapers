@@ -1,0 +1,161 @@
+ObjC.import("Foundation");
+
+function mutableDictionary() {
+  return $.NSMutableDictionary.alloc.init;
+}
+
+function plistData(value) {
+  return $.NSPropertyListSerialization.dataWithPropertyListFormatOptionsError(
+    value,
+    200,
+    0,
+    Ref()
+  );
+}
+
+function imageDesktop(path, stamp) {
+  const url = mutableDictionary();
+  url.setObjectForKey(
+    ObjC.unwrap($.NSURL.fileURLWithPath(path).absoluteString),
+    "relative"
+  );
+
+  const configuration = mutableDictionary();
+  configuration.setObjectForKey(url, "url");
+
+  const choice = mutableDictionary();
+  choice.setObjectForKey("com.apple.wallpaper.choice.image", "Provider");
+  choice.setObjectForKey(plistData(configuration), "Configuration");
+
+  const choices = $.NSMutableArray.alloc.init;
+  choices.addObject(choice);
+
+  const content = mutableDictionary();
+  content.setObjectForKey(choices, "Choices");
+
+  const desktop = mutableDictionary();
+  desktop.setObjectForKey(content, "Content");
+  desktop.setObjectForKey(
+    $.NSDate.dateWithTimeIntervalSince1970(stamp),
+    "LastSet"
+  );
+  return desktop;
+}
+
+function holder(desktop) {
+  const value = mutableDictionary();
+  value.setObjectForKey(desktop, "Desktop");
+  return value;
+}
+
+function writeFixture(storePath, stablePrefix) {
+  const displays = mutableDictionary();
+  displays.setObjectForKey(
+    holder(imageDesktop(stablePrefix + "-left.jpg", 1000)),
+    "display-left"
+  );
+  displays.setObjectForKey(
+    holder(imageDesktop(stablePrefix + "-right.jpg", 1000)),
+    "display-right"
+  );
+
+  const perDisplay = mutableDictionary();
+  perDisplay.setObjectForKey(
+    holder(imageDesktop(stablePrefix + "-middle.jpg", 800)),
+    "display-left"
+  );
+  perDisplay.setObjectForKey(
+    holder(imageDesktop(stablePrefix + "-middle.jpg", 800)),
+    "display-right"
+  );
+
+  const space = mutableDictionary();
+  space.setObjectForKey(perDisplay, "Displays");
+  space.setObjectForKey(
+    holder(imageDesktop(stablePrefix + "-middle.jpg", 900)),
+    "Default"
+  );
+
+  const spaces = mutableDictionary();
+  spaces.setObjectForKey(space, "shared-space");
+
+  // Some Space records have only the shared fallback and no explicit display
+  // map. It must normalize once without being assigned to any display group.
+  const defaultOnly = mutableDictionary();
+  defaultOnly.setObjectForKey(
+    holder(imageDesktop(stablePrefix.replace(/\/current$/, "") +
+      "/wall-2026-08-26-landscape-left.jpg", 700)),
+    "Default"
+  );
+  spaces.setObjectForKey(defaultOnly, "default-only");
+
+  const store = mutableDictionary();
+  store.setObjectForKey(displays, "Displays");
+  store.setObjectForKey(spaces, "Spaces");
+
+  const data = plistData(store);
+  if (data.isNil() || !data.writeToFileAtomically(storePath, true)) {
+    throw new Error("could not write the fixture store");
+  }
+}
+
+function dictionary(value) {
+  if (value === null || value === undefined) return null;
+  return !value.isNil() && value.isKindOfClass($.NSDictionary) ? value : null;
+}
+
+function parsePlist(data) {
+  if (data.isNil() || !data.isKindOfClass($.NSData)) return null;
+  const value = $.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(
+    data,
+    0,
+    Ref(),
+    Ref()
+  );
+  return value.isNil() ? null : value;
+}
+
+function imagePath(desktop) {
+  const content = dictionary(desktop.objectForKey("Content"));
+  if (content === null) return "";
+  const choices = content.objectForKey("Choices");
+  if (choices.isNil() || !choices.isKindOfClass($.NSArray) || choices.count === 0) {
+    return "";
+  }
+  const choice = dictionary(choices.objectAtIndex(0));
+  if (choice === null) return "";
+  const configuration = parsePlist(choice.objectForKey("Configuration"));
+  if (configuration === null) return "";
+  const url = dictionary(configuration.objectForKey("url"));
+  if (url === null) return "";
+  const relative = ObjC.unwrap(url.objectForKey("relative"));
+  return relative ? ObjC.unwrap($.NSURL.URLWithString(relative).path) : "";
+}
+
+function inspectFixture(storePath) {
+  const store = parsePlist($.NSData.dataWithContentsOfFile(storePath));
+  const spaces = dictionary(store.objectForKey("Spaces"));
+  const space = dictionary(spaces.objectForKey("shared-space"));
+  const perDisplay = dictionary(space.objectForKey("Displays"));
+  const left = dictionary(perDisplay.objectForKey("display-left"));
+  const right = dictionary(perDisplay.objectForKey("display-right"));
+  const fallback = dictionary(space.objectForKey("Default"));
+  const defaultOnly = dictionary(spaces.objectForKey("default-only"));
+  const defaultOnlyFallback = dictionary(defaultOnly.objectForKey("Default"));
+
+  return [
+    "display-left=" + imagePath(left.objectForKey("Desktop")),
+    "display-right=" + imagePath(right.objectForKey("Desktop")),
+    "default=" + imagePath(fallback.objectForKey("Desktop")),
+    "default-only=" + imagePath(defaultOnlyFallback.objectForKey("Desktop")),
+  ].join("\n");
+}
+
+function run(argv) {
+  if (argv[0] === "write") {
+    writeFixture(argv[1], argv[2]);
+    return "";
+  }
+  if (argv[0] === "inspect") return inspectFixture(argv[1]);
+  throw new Error("usage: store-converge-fixture.jxa write|inspect ...");
+}
