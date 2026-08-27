@@ -400,7 +400,7 @@ upscale() {
 
 public_validate_spotify() {
   local json_file="$1"
-  local title creator type uri url playable
+  local title creator type uri url playable uri_playlist_id url_playlist_id
   local page_status page_tmp public_description oembed_status oembed_tmp oembed_title oembed_provider
 
   require_file "$json_file"
@@ -415,6 +415,15 @@ public_validate_spotify() {
   [[ "$playable" == "PLAYABLE" ]] || die "Spotify result is not PLAYABLE: $playable"
   [[ "$uri" == spotify:playlist:* ]] || die "invalid Spotify playlist URI: $uri"
   [[ "$url" == https://open.spotify.com/playlist/* ]] || die "invalid Spotify playlist URL: $url"
+  uri_playlist_id="${uri#spotify:playlist:}"
+  url_playlist_id="${url#https://open.spotify.com/playlist/}"
+  url_playlist_id="${url_playlist_id%%\?*}"
+  url_playlist_id="${url_playlist_id%%\#*}"
+  url_playlist_id="${url_playlist_id%%/*}"
+  [[ -n "$uri_playlist_id" && "$uri_playlist_id" != *:* && "$uri_playlist_id" != */* ]] || \
+    die "invalid Spotify playlist ID in URI: $uri"
+  [[ "$url_playlist_id" == "$uri_playlist_id" ]] || \
+    die "Spotify playlist ID mismatch between URI and URL: '$uri_playlist_id' != '$url_playlist_id'"
   page_tmp="$(mktemp -t ai-wallpapers-spotify-page.XXXXXX)"
   page_status="$(curl -L -sS -o "$page_tmp" -w '%{http_code}' "$url")" || {
     rm -f "$page_tmp"
@@ -574,7 +583,8 @@ stage() {
     print -r -- "|:---:|:---:|:---:|"
     print -r -- "| ![Left panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-left.jpg) | ![Middle panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-middle.jpg) | ![Right panel](https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-right.jpg) |"
     print
-    print -r -- "🎧 **Soundtrack:** [$(jq -r .title "$spotify_accepted")]($(jq -r .url "$spotify_accepted")) — $(jq -r .creator "$spotify_accepted")"
+    print -r -- "🎧 **Soundtrack:** $(jq -r .title "$spotify_accepted") — $(jq -r .creator "$spotify_accepted") · [Open in Spotify]($(jq -r .url "$spotify_accepted"))"
+    print -r -- "**Spotify app URI:** \`$(jq -r .uri "$spotify_accepted")\`"
   } >"$expected_tmp"
 
   if [[ -e "$notes_file" ]]; then
@@ -598,7 +608,7 @@ validate_release() {
   notes_file="$(notes_file_for_revision "$revision")"
   require_file "$notes_file"
   require_file "$spotify_accepted"
-  local release_json body latest slot asset_url spotify_url
+  local release_json body latest slot asset_url spotify_url spotify_uri
   release_json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,assets,body)" || die "GitHub Release does not exist: $TAG"
   [[ "$(jq -r .tagName <<<"$release_json")" == "$TAG" ]] || die "release tag mismatch"
   jq -e '.assets | map(.name) | sort == ["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"]' <<<"$release_json" >/dev/null || \
@@ -608,7 +618,9 @@ validate_release() {
   [[ "$latest" == "$TAG" ]] || die "latest release is $latest, expected $TAG"
   body="$(jq -r .body <<<"$release_json")"
   spotify_url="$(jq -r .url "$spotify_accepted")"
+  spotify_uri="$(jq -r .uri "$spotify_accepted")"
   [[ "$body" == *"$spotify_url"* ]] || die "release body lacks exact Spotify URL"
+  [[ "$body" == *"$spotify_uri"* ]] || die "release body lacks exact Spotify app URI"
 
   for slot in "${SLOTS[@]}"; do
     asset_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/landscape-$slot.jpg"
@@ -622,7 +634,8 @@ validate_release() {
     --arg tag "$TAG" \
     --arg spotify_title "$(jq -r .title "$spotify_accepted")" \
     --arg spotify_url "$spotify_url" \
-    '{url:$url,tag:$tag,assets:["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"],embedded_previews:true,spotify:{title:$spotify_title,url:$spotify_url,publicly_validated:true}}'
+    --arg spotify_uri "$spotify_uri" \
+    '{url:$url,tag:$tag,assets:["landscape-left.jpg","landscape-middle.jpg","landscape-right.jpg"],embedded_previews:true,spotify:{title:$spotify_title,url:$spotify_url,app_uri:$spotify_uri,publicly_validated:true}}'
 }
 
 retention() {

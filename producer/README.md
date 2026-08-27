@@ -80,6 +80,12 @@ The script never overwrites an existing native, upscaled, or staged artifact.
 On a rerun it validates and reuses good artifacts, and stops on a conflict.
 `publish` also validates the release assets, embedded image previews, public
 Spotify page and oEmbed metadata before applying the 30-release retention rule.
+Release notes include an official HTTPS link labeled `Open in Spotify` plus the
+exact copyable `spotify:playlist:<playlist-id>` app URI. GitHub strips custom
+`spotify:` hyperlinks from rendered Markdown, so the HTTPS link provides the
+clickable app handoff while the URI remains available for direct use. The
+validator requires the URL and URI to identify the same playlist and requires
+both exact values in the published release body.
 
 When a published day's imagery must be corrected, archive the correction under
 new local revision roots, stage it there, and run
