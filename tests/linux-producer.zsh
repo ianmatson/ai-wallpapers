@@ -1,0 +1,255 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+readonly REPOSITORY="${0:A:h:h}"
+readonly PIPELINE="$REPOSITORY/producer/pipeline.zsh"
+readonly WRAPPER="$REPOSITORY/producer/wallpaper-producer"
+readonly TEST_ROOT="$(mktemp -d -t wallpaper-producer-test.XXXXXX)"
+trap 'rm -rf -- "$TEST_ROOT"' EXIT
+
+if command -v magick >/dev/null 2>&1; then
+  readonly IMAGE_COMMAND=magick
+elif command -v convert >/dev/null 2>&1; then
+  readonly IMAGE_COMMAND=convert
+else
+  print -u2 -r -- "SKIP: ImageMagick is not installed"
+  exit 0
+fi
+
+mkdir -p \
+  "$TEST_ROOT/bin" \
+  "$TEST_ROOT/repository" \
+  "$TEST_ROOT/input" \
+  "$TEST_ROOT/story/native" \
+  "$TEST_ROOT/story/upscaled" \
+  "$TEST_ROOT/story/staging" \
+  "$TEST_ROOT/story/style-references" \
+  "$TEST_ROOT/story/private" \
+  "$TEST_ROOT/upscayl/models" \
+  "$TEST_ROOT/upscayl/work" \
+  "$TEST_ROOT/upscayl/output" \
+  "$TEST_ROOT/seed"
+
+"$IMAGE_COMMAND" -size 16x9 xc:'#335577' "$TEST_ROOT/input/left.png"
+"$IMAGE_COMMAND" -size 16x9 xc:'#446688' "$TEST_ROOT/input/middle.png"
+"$IMAGE_COMMAND" -size 16x9 xc:'#557799' "$TEST_ROOT/input/right.png"
+"$IMAGE_COMMAND" -size 16x9 xc:'#112233' "$TEST_ROOT/story/style-references/style.png"
+cp "$TEST_ROOT/input/middle.png" "$TEST_ROOT/seed/digital-alpine-observatory.png"
+
+print -r -- 'fake model binary' >"$TEST_ROOT/upscayl/models/digital-art-4x.bin"
+print -r -- 'fake model parameters' >"$TEST_ROOT/upscayl/models/digital-art-4x.param"
+readonly BIN_HASH="$(sha256sum "$TEST_ROOT/upscayl/models/digital-art-4x.bin" | awk '{print $1}')"
+readonly PARAM_HASH="$(sha256sum "$TEST_ROOT/upscayl/models/digital-art-4x.param" | awk '{print $1}')"
+
+cat >"$TEST_ROOT/bin/upscayl-bin" <<'EOF'
+#!/usr/bin/env zsh
+set -euo pipefail
+local input='' output='' scale=''
+while (( $# > 0 )); do
+  case "$1" in
+    -i) input="$2"; shift 2 ;;
+    -o) output="$2"; shift 2 ;;
+    -s) scale="$2"; shift 2 ;;
+    -m|-n|-f|-g) shift 2 ;;
+    -v) shift ;;
+    *) print -u2 -r -- "unexpected argument: $1"; exit 2 ;;
+  esac
+done
+[[ "$scale" == 4 && -f "$input" && -n "$output" ]]
+if [[ "${FAKE_SOFTWARE_VULKAN:-0}" == 1 ]]; then
+  print -r -- '[0 llvmpipe (Fixture Software Vulkan)]'
+else
+  print -r -- '[0 Fixture Hardware GPU]'
+  print -r -- '[1 llvmpipe (Unused Fixture Software Vulkan)]'
+fi
+[[ "${FAKE_HANG:-0}" == 1 ]] && sleep 5
+if command -v magick >/dev/null 2>&1; then
+  magick "$input" -resize 400% "$output"
+else
+  convert "$input" -resize 400% "$output"
+fi
+EOF
+chmod 700 "$TEST_ROOT/bin/upscayl-bin"
+
+cat >"$TEST_ROOT/bin/vulkaninfo" <<'EOF'
+#!/usr/bin/env zsh
+print -r -- 'GPU0:'
+print -r -- '    deviceName = Fixture Hardware GPU'
+print -r -- '    deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU'
+EOF
+chmod 700 "$TEST_ROOT/bin/vulkaninfo"
+
+cat >"$TEST_ROOT/bin/gh" <<'EOF'
+#!/usr/bin/env zsh
+set -euo pipefail
+if [[ "${1:-}" == api ]]; then
+  print -r -- '[]'
+elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'url,tagName,assets,body'* ]]; then
+  print -r -- '{"url":"https://github.com/ianmatson/wallpaper-journey/releases/tag/wall-2099-01-02","tagName":"wall-2099-01-02","assets":[{"name":"landscape-left.jpg"},{"name":"landscape-middle.jpg"},{"name":"landscape-right.jpg"}],"body":"https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-left.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-middle.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-right.jpg https://open.spotify.com/playlist/fixture123 spotify:playlist:fixture123"}'
+elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'--json tagName'* ]]; then
+  print -r -- 'wall-2099-01-02'
+else
+  exit 2
+fi
+EOF
+chmod 700 "$TEST_ROOT/bin/gh"
+
+cat >"$TEST_ROOT/bin/curl" <<'EOF'
+#!/usr/bin/env zsh
+set -euo pipefail
+local output='' is_oembed=false url='' argument
+for argument in "$@"; do
+  [[ "$argument" == 'https://open.spotify.com/oembed' ]] && is_oembed=true
+  [[ "$argument" == https://* ]] && url="$argument"
+done
+while (( $# > 0 )); do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$output" ]]
+if [[ "$url" == https://github.com/*/releases/download/*/landscape-*.jpg ]]; then
+  cp "$FIXTURE_TEST_ROOT/story/staging/wall-2099-01-02/${url:t}" "$output"
+  [[ "${FIXTURE_REMOTE_MISMATCH:-0}" == 1 ]] && print -n -r -- x >>"$output"
+elif $is_oembed; then
+  print -r -- '{"title":"Test Soundtrack","provider_name":"Spotify"}' >"$output"
+else
+  print -r -- '<meta property="og:description" content="A synthetic test playlist">' >"$output"
+fi
+print -n -r -- '200'
+EOF
+chmod 700 "$TEST_ROOT/bin/curl"
+
+cat >"$TEST_ROOT/input/spotify.json" <<'EOF'
+{"title":"Test Soundtrack","creator":"Fixture Curator","type":"playlist","uri":"spotify:playlist:fixture123","url":"https://open.spotify.com/playlist/fixture123","playable_status":"PLAYABLE","search_query":"synthetic fixture"}
+EOF
+print -r -- 'A blue-hour expedition crosses one continuous synthetic horizon.' >"$TEST_ROOT/input/story.txt"
+print -r -- 'github_pat_fixture_token' >"$TEST_ROOT/github-token"
+chmod 600 "$TEST_ROOT/github-token"
+
+export PATH="$TEST_ROOT/bin:$PATH"
+export FIXTURE_TEST_ROOT="$TEST_ROOT"
+export AI_WALLPAPERS_RUN_DATE=2099-01-02
+export AI_WALLPAPERS_WORKSPACE_ROOT="$TEST_ROOT"
+export AI_WALLPAPERS_REPOSITORY="$TEST_ROOT/repository"
+export AI_WALLPAPERS_NATIVE_ROOT="$TEST_ROOT/story/native"
+export AI_WALLPAPERS_STYLE_ROOT="$TEST_ROOT/story/style-references"
+export AI_WALLPAPERS_UPSCALED_ROOT="$TEST_ROOT/story/upscaled"
+export AI_WALLPAPERS_STAGING_ROOT="$TEST_ROOT/story/staging"
+export AI_WALLPAPERS_PRIVATE_ROOT="$TEST_ROOT/story/private"
+export AI_WALLPAPERS_INPUT_ROOT="$TEST_ROOT/input"
+export AI_WALLPAPERS_SEED_IMAGE="$TEST_ROOT/seed/digital-alpine-observatory.png"
+export AI_WALLPAPERS_UPSCAYL_MODE=direct
+export AI_WALLPAPERS_UPSCAYL_EXECUTABLE="$TEST_ROOT/bin/upscayl-bin"
+export AI_WALLPAPERS_UPSCAYL_MODELS="$TEST_ROOT/upscayl/models"
+export AI_WALLPAPERS_UPSCAYL_GPU_ID=0
+export AI_WALLPAPERS_UPSCAYL_WORK="$TEST_ROOT/upscayl/work"
+export AI_WALLPAPERS_UPSCAYL_OUTPUT="$TEST_ROOT/upscayl/output"
+export AI_WALLPAPERS_UPSCAYL_MODEL_BIN_SHA256="$BIN_HASH"
+export AI_WALLPAPERS_UPSCAYL_MODEL_PARAM_SHA256="$PARAM_HASH"
+
+cat >"$TEST_ROOT/wallpaper.env" <<EOF
+AI_WALLPAPERS_TIME_ZONE=America/Chicago
+AI_WALLPAPERS_WORKSPACE_ROOT=$TEST_ROOT
+AI_WALLPAPERS_REPOSITORY=$TEST_ROOT/repository
+AI_WALLPAPERS_GITHUB_TOKEN_FILE=$TEST_ROOT/github-token
+AI_WALLPAPERS_NATIVE_ROOT=$TEST_ROOT/story/native
+AI_WALLPAPERS_STYLE_ROOT=$TEST_ROOT/story/style-references
+AI_WALLPAPERS_UPSCALED_ROOT=$TEST_ROOT/story/upscaled
+AI_WALLPAPERS_STAGING_ROOT=$TEST_ROOT/story/staging
+AI_WALLPAPERS_PRIVATE_ROOT=$TEST_ROOT/story/private
+AI_WALLPAPERS_INPUT_ROOT=$TEST_ROOT/input
+AI_WALLPAPERS_SEED_IMAGE=$TEST_ROOT/seed/digital-alpine-observatory.png
+AI_WALLPAPERS_UPSCAYL_MODE=direct
+AI_WALLPAPERS_UPSCAYL_EXECUTABLE=$TEST_ROOT/bin/upscayl-bin
+AI_WALLPAPERS_UPSCAYL_MODELS=$TEST_ROOT/upscayl/models
+AI_WALLPAPERS_UPSCAYL_GPU_ID=0
+AI_WALLPAPERS_UPSCAYL_WORK=$TEST_ROOT/upscayl/work
+AI_WALLPAPERS_UPSCAYL_OUTPUT=$TEST_ROOT/upscayl/output
+AI_WALLPAPERS_UPSCAYL_MODEL_BIN_SHA256=$BIN_HASH
+AI_WALLPAPERS_UPSCAYL_MODEL_PARAM_SHA256=$PARAM_HASH
+AI_WALLPAPERS_CONTROL_DIR=$TEST_ROOT/control/producer
+EOF
+chmod 600 "$TEST_ROOT/wallpaper.env"
+
+cp "$TEST_ROOT/wallpaper.env" "$TEST_ROOT/bad-control.env"
+print -r -- "AI_WALLPAPERS_CONTROL_DIR=$TEST_ROOT/repository" >>"$TEST_ROOT/bad-control.env"
+chmod 600 "$TEST_ROOT/bad-control.env"
+readonly REPOSITORY_MODE_BEFORE="$(stat -c %a "$TEST_ROOT/repository")"
+if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/bad-control.env" "$WRAPPER" begin-run bad-control >/dev/null 2>&1; then
+  print -u2 -r -- 'expected overlapping control root rejection before lease creation'
+  exit 1
+fi
+[[ "$(stat -c %a "$TEST_ROOT/repository")" == "$REPOSITORY_MODE_BEFORE" ]]
+[[ ! -e "$TEST_ROOT/repository/wallpaper-producer-2099-01-02.lease" ]]
+
+wrapper_run() {
+  AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" --run-id fixture-run-a "$@"
+}
+
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" begin-run fixture-run-a | grep -qx fixture-run-a
+if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" begin-run fixture-run-b >/dev/null 2>&1; then
+  print -u2 -r -- 'expected competing run lease rejection'
+  exit 1
+fi
+
+wrapper_run accept-native left "$TEST_ROOT/input/left.png" >/dev/null
+wrapper_run accept-native middle "$TEST_ROOT/input/middle.png" >/dev/null
+wrapper_run accept-native right "$TEST_ROOT/input/right.png" >/dev/null
+wrapper_run validate-native | jq -e '.width == 16 and .height == 9' >/dev/null
+
+if wrapper_run accept-native left "$TEST_ROOT/input/left.png" >/dev/null 2>&1; then
+  print -u2 -r -- 'expected native overwrite rejection'
+  exit 1
+fi
+
+wrapper_run upscale | jq -e '.files | length == 3' >/dev/null
+wrapper_run upscale >/dev/null
+wrapper_run accept-story "$TEST_ROOT/input/story.txt" >/dev/null
+wrapper_run validate-playlist "$TEST_ROOT/input/spotify.json" >/dev/null
+wrapper_run stage | jq -e '.assets | length == 3' >/dev/null
+
+for slot in left middle right; do
+  identify -quiet -format '%w %h %m' "$TEST_ROOT/story/upscaled/wall-2099-01-02/landscape-$slot.png" | grep -qx '64 36 PNG'
+  identify -quiet -format '%w %h %m' "$TEST_ROOT/story/staging/wall-2099-01-02/landscape-$slot.jpg" | grep -qx '64 36 JPEG'
+done
+
+mkdir -p "$TEST_ROOT/story/native/wall-2099-01-03"
+for slot in left middle right; do
+  cp "$TEST_ROOT/input/$slot.png" "$TEST_ROOT/story/native/wall-2099-01-03/landscape-$slot.png"
+done
+if FAKE_SOFTWARE_VULKAN=1 AI_WALLPAPERS_RUN_DATE=2099-01-03 "$PIPELINE" upscale >/dev/null 2>&1; then
+  print -u2 -r -- 'expected software Vulkan rejection'
+  exit 1
+fi
+
+mkdir -p "$TEST_ROOT/story/native/wall-2099-01-04"
+for slot in left middle right; do
+  cp "$TEST_ROOT/input/$slot.png" "$TEST_ROOT/story/native/wall-2099-01-04/landscape-$slot.png"
+done
+if FAKE_HANG=1 AI_WALLPAPERS_UPSCALE_TIMEOUT_SECONDS=1 AI_WALLPAPERS_RUN_DATE=2099-01-04 "$PIPELINE" upscale >/dev/null 2>&1; then
+  print -u2 -r -- 'expected direct Upscayl timeout rejection'
+  exit 1
+fi
+if AI_WALLPAPERS_RUN_DATE=2099-02-31 "$PIPELINE" context >/dev/null 2>&1; then
+  print -u2 -r -- 'expected invalid calendar date rejection'
+  exit 1
+fi
+if AI_WALLPAPERS_PRIVATE_ROOT="$TEST_ROOT/story/native" "$PIPELINE" context >/dev/null 2>&1; then
+  print -u2 -r -- 'expected duplicate runtime root rejection'
+  exit 1
+fi
+
+wrapper_run context | jq -e '.tag == "wall-2099-01-02"' >/dev/null
+if FIXTURE_REMOTE_MISMATCH=1 wrapper_run validate-release >/dev/null 2>&1; then
+  print -u2 -r -- 'expected published asset digest mismatch rejection'
+  exit 1
+fi
+print -r -- 'The synthetic expedition crossed the blue horizon, left a precise signal marker beside the observatory, and opened a clear route toward tomorrow.' >"$TEST_ROOT/input/continuity.txt"
+wrapper_run append-continuity-log "$TEST_ROOT/input/continuity.txt" >/dev/null
+wrapper_run completion-check | jq -e '.release_valid and .private_journal_entry' >/dev/null
+AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" end-run fixture-run-a | grep -qx fixture-run-a
+
+print -r -- 'Linux producer fixture passed'
