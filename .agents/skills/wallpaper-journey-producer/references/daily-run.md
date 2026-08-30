@@ -14,19 +14,19 @@ Use the absolute wrapper path returned by the saved project configuration. Begin
 
 Plan one continuous 48:9 panorama cut into adjacent left, middle, and right 16:9 windows. Keep a single horizon, camera height, projection, lighting direction, atmosphere, scale, and palette. Place important landmarks in explicit spans so they are not duplicated or reframed across panels.
 
-The standing finish is a clean graphic digital landscape: crisp silhouettes, simplified geometric forms, layered atmospheric planes, controlled broad color shapes, flat-to-soft gradients, restrained detail, and clean edges. Reject text, logos, watermarks, signatures, borders, duplicated landmarks or suns, broken seams, incompatible perspective, and cellular, honeycomb, pebble, stippled, mosaic, impasto, canvas, crackle, dither, brush-grain, painterly-noise, or pervasive micro-detail texture.
+The standing finish is a clean graphic digital landscape: crisp silhouettes, simplified geometric forms, layered atmospheric planes, controlled broad color shapes, flat-to-soft gradients, restrained detail, and clean edges. Reject text, logos, watermarks, signatures, borders, duplicated landmarks or suns, joins so abrupt that they disrupt general visual continuity, incompatible perspective, and cellular, honeycomb, pebble, stippled, mosaic, impasto, canvas, crackle, dither, brush-grain, painterly-noise, or pervasive micro-detail texture. Modest visible panel seams are acceptable when horizon, camera height, projection, lighting direction, atmosphere, scale, palette, and narrative motion remain generally continuous.
 
 1. Generate the middle panel first using the style references and text-only continuity brief.
 2. Visually inspect it. Generate left using the accepted middle only as spatial/boundary context; style still comes exclusively from the style references.
 3. Visually inspect both. Generate right using accepted middle and left only as spatial/boundary context.
-4. Inspect each panel and the left-to-right panorama. Regenerate before acceptance if seams, perspective, subject allocation, texture, or style fail.
+4. Inspect each panel and the left-to-right panorama. Judge joins by general visual continuity rather than pixel-perfect matching. Regenerate before acceptance only when a join creates a jarring break in horizon, camera height, projection, lighting direction, atmosphere, scale, palette, narrative motion, subject allocation, texture, or style; modest visible seams by themselves are acceptable.
 5. Save each accepted PNG under `tmp/`, then call `accept-native middle|left|right FILE`. Run `validate-native` after all three are accepted.
 
 Never overwrite an existing native file. If all three already exist, validate and visually inspect them instead.
 
 ## 3. Upscale and review
 
-Run `upscale`. It must use the configured `digital-art-4x` model, verify model hashes, produce exact 4x dimensions, and atomically archive outputs. Visually inspect all three upscaled PNGs and the panorama. Stop if upscaling introduces grain, texture, corruption, or seam problems.
+Run `upscale`. It must use the configured `digital-art-4x` model, verify model hashes, produce exact 4x dimensions, and atomically archive outputs. Visually inspect all three upscaled PNGs and the panorama. Stop if upscaling introduces grain, texture, corruption, or turns an acceptable join into a disruptive continuity break; modest visible seams remain acceptable.
 
 ## 4. Story and soundtrack
 
