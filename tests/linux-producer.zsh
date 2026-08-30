@@ -80,11 +80,25 @@ print -r -- '    deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU'
 EOF
 chmod 700 "$TEST_ROOT/bin/vulkaninfo"
 
+print -r -- '# Fixture repository' >"$TEST_ROOT/repository/README.md"
+git -C "$TEST_ROOT/repository" init -b main >/dev/null
+git -C "$TEST_ROOT/repository" config user.name 'Wallpaper Fixture'
+git -C "$TEST_ROOT/repository" config user.email 'fixture@example.invalid'
+git -C "$TEST_ROOT/repository" add README.md
+git -C "$TEST_ROOT/repository" commit -m 'Initialize fixture repository' >/dev/null
+git -C "$TEST_ROOT/repository" remote add origin git@github.com:ianmatson/wallpaper-journey.git
+
 cat >"$TEST_ROOT/bin/gh" <<'EOF'
 #!/usr/bin/env zsh
 set -euo pipefail
-if [[ "${1:-}" == api ]]; then
+if [[ "${1:-}" == api && "${2:-}" == user ]]; then
+  print -r -- 'ianmatson'
+elif [[ "${1:-}" == api && "${2:-}" == /repos/ianmatson/wallpaper-journey/commits/main ]]; then
+  git -C "$FIXTURE_TEST_ROOT/repository" rev-parse HEAD
+elif [[ "${1:-}" == api ]]; then
   print -r -- '[]'
+elif [[ "${1:-}" == auth && "${2:-}" == status ]]; then
+  exit 0
 elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'url,tagName,assets,body'* ]]; then
   print -r -- '{"url":"https://github.com/ianmatson/wallpaper-journey/releases/tag/wall-2099-01-02","tagName":"wall-2099-01-02","assets":[{"name":"landscape-left.jpg"},{"name":"landscape-middle.jpg"},{"name":"landscape-right.jpg"}],"body":"https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-left.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-middle.jpg https://github.com/ianmatson/wallpaper-journey/releases/download/wall-2099-01-02/landscape-right.jpg https://open.spotify.com/playlist/fixture123 spotify:playlist:fixture123"}'
 elif [[ "${1:-}" == release && "${2:-}" == view && "$*" == *'--json tagName'* ]]; then
@@ -195,6 +209,7 @@ if AI_WALLPAPERS_ENV_FILE="$TEST_ROOT/wallpaper.env" "$WRAPPER" begin-run fixtur
   exit 1
 fi
 
+wrapper_run preflight >/dev/null
 wrapper_run accept-native left "$TEST_ROOT/input/left.png" >/dev/null
 wrapper_run accept-native middle "$TEST_ROOT/input/middle.png" >/dev/null
 wrapper_run accept-native right "$TEST_ROOT/input/right.png" >/dev/null

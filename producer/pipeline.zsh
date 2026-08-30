@@ -352,7 +352,7 @@ preflight() {
   [[ -z "$(git -C "$REPOSITORY" status --porcelain)" ]] || die "repository worktree is not clean"
   [[ "$(git -C "$REPOSITORY" remote get-url origin)" == "$REQUIRED_ORIGIN" ]] || die "repository origin does not equal $REQUIRED_ORIGIN"
 
-  local login
+  local login local_head remote_head
   if ! login="$(gh api user --jq .login 2>&1)"; then
     if [[ "$login" == *"Could not resolve host"* || "$login" == *"connection"* || "$login" == *"network"* ]]; then
       die "network access to api.github.com failed: $login"
@@ -362,8 +362,12 @@ preflight() {
   [[ "$login" == "ianmatson" ]] || die "unexpected GitHub account: $login"
   gh auth status -h github.com >/dev/null || die "gh auth status failed"
 
-  git -C "$REPOSITORY" fetch --prune origin
-  git -C "$REPOSITORY" pull --ff-only origin main
+  local_head="$(git -C "$REPOSITORY" rev-parse HEAD)"
+  remote_head="$(gh api "/repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)" || \
+    die "could not read origin/main through the GitHub API"
+  [[ "$remote_head" =~ '^[0-9a-f]{40}$' ]] || die "GitHub returned an invalid origin/main revision"
+  [[ "$local_head" == "$remote_head" ]] || \
+    die "repository HEAD differs from origin/main; update the checkout under supervision"
   require_file "$REPOSITORY/README.md"
   info "preflight passed; README contract still requires agent review"
 }
