@@ -368,8 +368,6 @@ preflight() {
   [[ "$remote_head" =~ '^[0-9a-f]{40}$' ]] || die "GitHub returned an invalid origin/main revision"
   [[ "$local_head" == "$remote_head" ]] || \
     die "repository HEAD differs from origin/main; update the checkout under supervision"
-  require_file "$REPOSITORY/README.md"
-  info "preflight passed; README contract still requires agent review"
 }
 
 doctor() {
@@ -483,7 +481,7 @@ references() {
       historical_context:{primary_kind:$kind,primary:$primary,older_context_references:$older},
       role_policy:{
         style_references:"exclusive source of visual style, rendering treatment, shape language, palette handling, and texture",
-        historical_context:"narrative and continuity context only; never a source of style cues and never pass these files to the image generator"
+        historical_context:"narrative and continuity context; may be passed to image generation only to preserve the identity or appearance of a specific recurring element, never as a source of overall composition or visual style"
       }
     }'
 }
