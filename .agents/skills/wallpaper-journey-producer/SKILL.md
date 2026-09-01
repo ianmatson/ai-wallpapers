@@ -22,7 +22,15 @@ For every deterministic operation, use only `/home/ian/Documents/Codex/wallpaper
 
 1. Acquire or resume today's lease. Run `preflight` and `context`; if today's release is already complete, validate and report it without regenerating.
 2. Read `continuity-log` and `references` within the boundaries above. Advance the journey visibly with a new event, place, or transformation, and avoid repeating yesterday's dominant composition.
-3. Treat the triptych as three adjacent crops of one continuous wide scene, not standalone compositions. Plan major forms, landmarks, perspective, lighting, and movement across the full panorama before generating panels. Prefer middle-first and use accepted panels as spatial context. Judge the assembled triptych as one image and reject anything that repeats, restarts, misaligns, or otherwise breaks the scene's spatial logic, as well as text, logos, watermarks, or clear style drift. Save candidates under the workspace `tmp/` directory, accept them through the wrapper, run `validate-native`, then `upscale` and inspect the results.
+3. Create the triptych as three adjacent crops of one continuous wide scene:
+   - Before generation, plan each tile's role and joins, shared camera and perspective, lighting, what changes or stays fixed, and the total and per-tile allocation of recurring elements.
+   - Generate the middle first. Accept it only when the composition works and both edges offer plausible continuations without awkwardly cutting important subjects.
+   - Base each side prompt on the accepted middle's observed horizon, perspective, lighting, scale, edge geometry, and connecting features—not only on the original plan.
+   - Always supply the middle as a clearly labeled spatial reference; add a crop of the relevant middle edge when useful. Dedicated style references remain the exclusive style source, and historical panels are identity references only.
+   - For each side, state briefly what stays fixed, what crosses the seam, what is new, and what must not be duplicated.
+   - Generate sides sequentially and inspect the assembled panorama after each candidate. Give the accepted panorama-so-far as context for the final side.
+   - Accept panels only from the assembled triptych view. Check scene continuity, perspective, lighting, counts, recurring-element identity, tile distinctness, seam logic, text, logos, watermarks, and style drift. Regenerate a failed side with one targeted correction.
+   Save candidates under the workspace `tmp/` directory, accept them through the wrapper, run `validate-native`, then `upscale` and inspect the results.
 4. Accept one public story sentence. Select and validate a scene-appropriate Spotify playlist using exact public metadata. Run `stage`, inspect the release notes for privacy, then `publish` and `validate-release`.
 5. After release validation, append one private continuity paragraph through the wrapper. Run `completion-check`, then `end-run`; ending the lease is forbidden before both release and journal presence validate.
 
