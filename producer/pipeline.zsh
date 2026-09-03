@@ -629,6 +629,64 @@ archive_upscale() {
   rm -f "$tmp"
 }
 
+preserve_watcher_artifact() {
+  local source="$1" category="$2" digest destination
+  [[ -e "$source" ]] || return 0
+  digest="$(sha256_file "$source")"
+  destination="$UPSCAYL_WORK/preserved-$category/${source:t}.$digest"
+  mkdir -p "${destination:h}"
+  if [[ -e "$destination" ]]; then
+    [[ "$(sha256_file "$destination")" == "$digest" ]] || \
+      die "preserved watcher artifact conflicts with existing file: $destination"
+    rm -f "$source"
+  else
+    mv "$source" "$destination"
+  fi
+  info "preserved stale local watcher artifact: $destination"
+}
+
+write_source_digest() {
+  local marker="$1" digest="$2" tmp
+  if [[ -e "$marker" ]]; then
+    [[ -f "$marker" && "$(<"$marker")" == "$digest" ]] || \
+      die "Upscayl source digest marker conflicts with native input: $marker"
+    return
+  fi
+  tmp="$(mktemp "${marker:h}/.${marker:t}.XXXXXX")"
+  print -r -- "$digest" >"$tmp"
+  chmod 644 "$tmp"
+  ln "$tmp" "$marker" || {
+    rm -f "$tmp"
+    die "refusing to overwrite Upscayl source digest marker: $marker"
+  }
+  rm -f "$tmp"
+}
+
+prepare_upscayl_result() {
+  local result="$1" marker="$2" native_hash="$3"
+  if [[ -e "$result" ]]; then
+    if [[ -f "$marker" && "$(<"$marker")" == "$native_hash" ]]; then
+      return 0
+    fi
+    preserve_watcher_artifact "$result" outputs
+    [[ -e "$marker" ]] && preserve_watcher_artifact "$marker" metadata
+  elif [[ -e "$marker" ]]; then
+    preserve_watcher_artifact "$marker" metadata
+  fi
+  return 1
+}
+
+recover_watcher_path_unit() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local service="${AI_WALLPAPERS_UPSCAYL_WATCHER_SERVICE:-wallpaper-upscayl-watcher.service}"
+  local path_unit="${AI_WALLPAPERS_UPSCAYL_WATCHER_PATH_UNIT:-wallpaper-upscayl-watcher.path}"
+  if systemctl --user is-failed --quiet "$service" || systemctl --user is-failed --quiet "$path_unit"; then
+    info "recovering failed Upscayl watcher path unit"
+    systemctl --user reset-failed "$service" "$path_unit" || die "could not reset failed Upscayl watcher units"
+    systemctl --user restart "$path_unit" || die "could not restart Upscayl watcher path unit"
+  fi
+}
+
 upscale_direct() {
   require_command "$UPSCAYL_EXECUTABLE"
   require_command timeout
@@ -638,13 +696,14 @@ upscale_direct() {
   verify_hardware_vulkan
   mkdir -p "$UPSCAYL_OUTPUT" "$UPSCAYL_WORK" "$UPSCALED_DIR"
 
-  local slot native native_hash result archived width height expected_width expected_height job_dir job_result job_log selected_device
+  local slot native native_hash result result_marker archived width height expected_width expected_height job_dir job_result job_log selected_device
   local -a arguments
   selected_device="$(selected_hardware_vulkan_device)"
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
     native_hash="$(sha256_file "$native")"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    result_marker="$result.source-sha256"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     read -r width height <<<"$(require_png "$native")"
     expected_width=$(( width * UPSCAYL_SCALE ))
@@ -655,7 +714,7 @@ upscale_direct() {
       info "reusing archived upscale: $archived"
       continue
     fi
-    if [[ -e "$result" ]]; then
+    if prepare_upscayl_result "$result" "$result_marker" "$native_hash"; then
       require_png "$result" "$expected_width" "$expected_height" >/dev/null
       info "reusing completed Upscayl result: $result"
       archive_upscale "$result" "$archived" "$expected_width" "$expected_height"
@@ -663,7 +722,7 @@ upscale_direct() {
     fi
 
     job_dir="$(mktemp -d "$UPSCAYL_WORK/.upscayl-job.XXXXXX")"
-    job_result="$job_dir/$TAG-landscape-$slot-$native_hash-4x.png"
+    job_result="$job_dir/$TAG-landscape-$slot-4x.png"
     job_log="$job_dir/upscayl.log"
     arguments=(
       -i "$native"
@@ -685,6 +744,7 @@ upscale_direct() {
       die "Upscayl did not confirm configured hardware device $UPSCAYL_GPU_ID ($selected_device); job preserved at $job_dir"
     require_png "$job_result" "$expected_width" "$expected_height" >/dev/null
     archive_upscale "$job_result" "$result" "$expected_width" "$expected_height"
+    write_source_digest "$result_marker" "$native_hash"
     archive_upscale "$result" "$archived" "$expected_width" "$expected_height"
     rm -f "$job_result"
     rm -f "$job_log"
@@ -694,14 +754,15 @@ upscale_direct() {
 
 upscale_watcher() {
   mkdir -p "$UPSCAYL_INBOX" "$UPSCAYL_OUTPUT" "$UPSCALED_DIR"
-  local slot native native_hash queued result archived width height expected_width expected_height now
+  local slot native native_hash queued result result_marker archived stale_queued width height expected_width expected_height now
   local deadline=$(( $(date +%s) + UPSCALE_TIMEOUT_SECONDS ))
 
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
     native_hash="$(sha256_file "$native")"
-    queued="$UPSCAYL_INBOX/$TAG-landscape-$slot-$native_hash.png"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
+    queued="$UPSCAYL_INBOX/$TAG-landscape-$slot.png"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    result_marker="$result.source-sha256"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     read -r width height <<<"$(require_png "$native")"
     expected_width=$(( width * 4 ))
@@ -712,24 +773,36 @@ upscale_watcher() {
       info "reusing archived upscale: $archived"
       continue
     fi
-    if [[ -e "$result" ]]; then
+    if prepare_upscayl_result "$result" "$result_marker" "$native_hash"; then
       require_png "$result" "$expected_width" "$expected_height" >/dev/null
       info "reusing completed Upscayl result: $result"
       continue
     fi
+    for stale_queued in "$UPSCAYL_INBOX/$TAG-landscape-$slot-"*.png(N); do
+      preserve_watcher_artifact "$stale_queued" inputs
+    done
     if [[ -e "$queued" ]]; then
       require_png "$queued" "$width" "$height" >/dev/null
-      info "already queued: $queued"
+      if [[ "$(sha256_file "$queued")" == "$native_hash" ]]; then
+        info "already queued: $queued"
+      else
+        preserve_watcher_artifact "$queued" inputs
+        cp -p "$native" "$queued"
+        info "queued: $queued"
+      fi
     else
       cp -p "$native" "$queued"
       info "queued: $queued"
     fi
   done
 
+  recover_watcher_path_unit
+
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
     native_hash="$(sha256_file "$native")"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    result_marker="$result.source-sha256"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     [[ -e "$archived" ]] && continue
     read -r width height <<<"$(require_png "$native")"
@@ -744,6 +817,7 @@ upscale_watcher() {
       sleep 5
     done
     [[ -f "$result" ]] || die "timed out waiting for Upscayl result: $result"
+    write_source_digest "$result_marker" "$native_hash"
     archive_upscale "$result" "$archived" "$expected_width" "$expected_height"
   done
 }

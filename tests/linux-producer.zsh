@@ -229,8 +229,8 @@ wrapper_run upscale | jq -e '.files | length == 3' >/dev/null
 wrapper_run upscale >/dev/null
 for slot in left middle right; do
   native_hash="$(sha256sum "$TEST_ROOT/story/native/wall-2099-01-02/landscape-$slot.png" | awk '{print $1}')"
-  [[ -f "$TEST_ROOT/upscayl/output/wall-2099-01-02-landscape-$slot-$native_hash-4x.png" ]]
-  [[ ! -e "$TEST_ROOT/upscayl/output/wall-2099-01-02-landscape-$slot-4x.png" ]]
+  [[ -f "$TEST_ROOT/upscayl/output/wall-2099-01-02-landscape-$slot-4x.png" ]]
+  [[ "$(<"$TEST_ROOT/upscayl/output/wall-2099-01-02-landscape-$slot-4x.png.source-sha256")" == "$native_hash" ]]
 done
 wrapper_run accept-story "$TEST_ROOT/input/story.txt" >/dev/null
 wrapper_run validate-playlist "$TEST_ROOT/input/spotify.json" >/dev/null
