@@ -10,7 +10,7 @@ Copy `wallpaper.env.example` outside the public repository, replace its placehol
 
 The wrapper rejects unsafe ownership, permissions, paths, dates, overlapping runtime roots, unexpected Git state, or the wrong GitHub identity. Agent-created inputs are accepted only from `AI_WALLPAPERS_INPUT_ROOT`.
 
-Current Linux production intentionally uses watcher-mode upscaling. The wrapper queues each native panel, waits within the configured timeout, validates exact 4x dimensions, and atomically archives the result. Operators and agents must not start or control the watcher, Vulkan, or Upscayl directly. Direct mode remains available for configured hosts and isolated tests.
+Current Linux production intentionally uses watcher-mode upscaling. The wrapper content-addresses each queued job from the native panel digest, waits within the configured timeout, validates exact 4x dimensions, and atomically archives the matching result. This prevents a corrected panel from reusing an older same-date result. Operators and agents must not start or control the watcher, Vulkan, or Upscayl directly. Direct mode remains available for configured hosts and isolated tests.
 
 ## Run lifecycle
 

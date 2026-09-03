@@ -638,12 +638,13 @@ upscale_direct() {
   verify_hardware_vulkan
   mkdir -p "$UPSCAYL_OUTPUT" "$UPSCAYL_WORK" "$UPSCALED_DIR"
 
-  local slot native result archived width height expected_width expected_height job_dir job_result job_log selected_device
+  local slot native native_hash result archived width height expected_width expected_height job_dir job_result job_log selected_device
   local -a arguments
   selected_device="$(selected_hardware_vulkan_device)"
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    native_hash="$(sha256_file "$native")"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     read -r width height <<<"$(require_png "$native")"
     expected_width=$(( width * UPSCAYL_SCALE ))
@@ -662,7 +663,7 @@ upscale_direct() {
     fi
 
     job_dir="$(mktemp -d "$UPSCAYL_WORK/.upscayl-job.XXXXXX")"
-    job_result="$job_dir/$TAG-landscape-$slot-4x.png"
+    job_result="$job_dir/$TAG-landscape-$slot-$native_hash-4x.png"
     job_log="$job_dir/upscayl.log"
     arguments=(
       -i "$native"
@@ -693,13 +694,14 @@ upscale_direct() {
 
 upscale_watcher() {
   mkdir -p "$UPSCAYL_INBOX" "$UPSCAYL_OUTPUT" "$UPSCALED_DIR"
-  local slot native queued result archived width height expected_width expected_height now
+  local slot native native_hash queued result archived width height expected_width expected_height now
   local deadline=$(( $(date +%s) + UPSCALE_TIMEOUT_SECONDS ))
 
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
-    queued="$UPSCAYL_INBOX/$TAG-landscape-$slot.png"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    native_hash="$(sha256_file "$native")"
+    queued="$UPSCAYL_INBOX/$TAG-landscape-$slot-$native_hash.png"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     read -r width height <<<"$(require_png "$native")"
     expected_width=$(( width * 4 ))
@@ -726,7 +728,8 @@ upscale_watcher() {
 
   for slot in "${SLOTS[@]}"; do
     native="$NATIVE_DIR/landscape-$slot.png"
-    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-4x.png"
+    native_hash="$(sha256_file "$native")"
+    result="$UPSCAYL_OUTPUT/$TAG-landscape-$slot-$native_hash-4x.png"
     archived="$UPSCALED_DIR/landscape-$slot.png"
     [[ -e "$archived" ]] && continue
     read -r width height <<<"$(require_png "$native")"
