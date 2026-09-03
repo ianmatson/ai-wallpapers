@@ -481,7 +481,7 @@ references() {
       historical_context:{primary_kind:$kind,primary:$primary,older_context_references:$older},
       role_policy:{
         style_references:"exclusive source of visual style, rendering treatment, shape language, palette handling, and texture",
-        historical_context:"narrative and continuity context; may be passed to image generation only to preserve the identity or appearance of a specific recurring element, never as a source of overall composition or visual style"
+        historical_context:"text-only narrative and continuity context; never attach historical images to image generation"
       }
     }'
 }
