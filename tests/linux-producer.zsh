@@ -8,6 +8,11 @@ readonly WRAPPER="$REPOSITORY/producer/wallpaper-producer"
 readonly TEST_ROOT="$(mktemp -d -t wallpaper-producer-test.XXXXXX)"
 trap 'rm -rf -- "$TEST_ROOT"' EXIT
 
+if grep -Fq 'gh release delete' "$PIPELINE"; then
+  print -u2 -r -- 'producer must preserve published GitHub Releases and tags'
+  exit 1
+fi
+
 if command -v magick >/dev/null 2>&1; then
   readonly IMAGE_COMMAND=magick
 elif command -v convert >/dev/null 2>&1; then

@@ -34,9 +34,9 @@ Run `producer/wallpaper-producer help` for the complete command list. Routine co
 
 ## Responsibilities and privacy
 
-The agent supplies visual judgment, image generation and review, the public story sentence, and selection of an existing public Spotify playlist. The wrapper handles paths, immutable acceptance, image validation, upscaling, release notes, GitHub publication, public Spotify validation, release-asset digest checks, retention, append-only journaling, and final completion.
+The agent supplies visual judgment, image generation and review, the public story sentence, and selection of an existing public Spotify playlist. The wrapper handles paths, immutable acceptance, image validation, upscaling, release notes, GitHub publication, public Spotify validation, release-asset digest checks, append-only journaling, and final completion. Published GitHub Releases and their tags are permanent: the producer never prunes them. Local consumer cache cleanup remains consumer-managed.
 
-`references` separates dedicated style references from prior journey images. Style references define rendering style. Prior images may preserve the visual identity of specific recurring elements, but must not control the new scene's overall composition or style.
+`references` separates dedicated style references from prior journey images. Dedicated style references are the exclusive visual inputs to image generation. Prior journey images and the private journal may inform text-only continuity and recurring-element identity, but must never be attached to image generation or control the new scene's composition or rendering style.
 
 The continuity journal is stored outside the public repository and staging tree. It is append-only by date and must never be quoted, staged, uploaded, or attached to image generation.
 

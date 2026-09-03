@@ -24,7 +24,8 @@ The deterministic release work is handled by the versioned
 [`producer/pipeline.zsh`](producer/pipeline.zsh) CLI. Codex supplies the visual
 direction, image generation and review, story sentence, and playlist judgment;
 the script handles validation, upscaling coordination, staging, publishing,
-embedded previews, and retention. See [`producer/README.md`](producer/README.md)
+and embedded previews. Published GitHub Releases and tags are retained permanently;
+local subscriber cache cleanup stays local. See [`producer/README.md`](producer/README.md)
 for the command contract.
 
 ## Subscribe — macOS

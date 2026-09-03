@@ -1050,19 +1050,6 @@ completion_check() {
     '{tag:$tag,release_valid:true,private_journal_entry:true,journal:$journal}'
 }
 
-retention() {
-  local releases_json old_tag
-  releases_json="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --exclude-drafts --exclude-pre-releases --json tagName,publishedAt)"
-  while IFS= read -r old_tag; do
-    [[ -n "$old_tag" ]] || continue
-    info "deleting expired wallpaper release: $old_tag"
-    gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
-  done < <(jq -r '
-    map(select(.tagName | test("^wall-[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
-    | sort_by(.publishedAt) | reverse | .[30:][]?.tagName
-  ' <<<"$releases_json")
-}
-
 publish() {
   stage >/dev/null
   local notes_file="$(active_notes_file)"
@@ -1083,7 +1070,6 @@ publish() {
       --latest >/dev/null
   fi
   validate_release
-  retention
 }
 
 replace_release_assets() {
@@ -1127,7 +1113,7 @@ Commands:
   validate-playlist CANDIDATE     Publicly validate and accept a Spotify candidate JSON.
   replace-playlist CANDIDATE      Append a validated soundtrack revision without deleting the old one.
   stage                           Convert JPEGs and deterministically build release notes.
-  publish                         Create/edit, validate, and apply 30-release retention.
+  publish                         Create or edit today's release, then validate it.
   replace-release-assets          Replace exactly the three assets on today's existing release, then validate.
   validate-release                Validate an already-published release without changing it.
   completion-check                Validate the release and today's private journal entry.
